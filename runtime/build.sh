@@ -31,5 +31,11 @@ emcc runtime.c vendor/mruby/build/emscripten/lib/libmruby.a \
   -s EXPORTED_FUNCTIONS='["_wc_init","_wc_render","_wc_get_info","_wc_debug_state","_wc_set_seed"]' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=4194304 \
-  -o ../build/wyvern.wasm
-echo "built ../build/wyvern.wasm ($(wc -c < ../build/wyvern.wasm) bytes)"
+  -o ../build/main.wasm
+echo "built ../build/main.wasm ($(wc -c < ../build/main.wasm) bytes)"
+
+# pack the flagship example as a ready-to-run demo cart
+node "$WASMCART_REPO/bin/wasmcart-pack.js" \
+  --wasm ../build/main.wasm --assets ../examples/flappy/app \
+  --name flappy-wyvern -o ../build/wyvern.wasc > /dev/null
+echo "packed ../build/wyvern.wasc (npx wasmcart build/wyvern.wasc to play)"

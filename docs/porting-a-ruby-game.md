@@ -58,7 +58,7 @@ Iterate by editing Ruby and rerunning - the directory IS a dev-mode cart, no
 build step. When it plays right:
 
 ```bash
-npx wasmcart pack --wasm cart.wasm --assets app --name my-game -o my-game.wasc
+npx wasmcart pack --wasm main.wasm --assets app --name my-game -o my-game.wasc
 ```
 
 `my-game.wasc` is the single shippable file. Same artifact everywhere; no

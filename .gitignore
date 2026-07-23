@@ -2,6 +2,7 @@ node_modules/
 runtime/vendor/
 runtime/prelude.inc
 *.wasc
+!build/wyvern.wasc
 *.sav
-template/cart.wasm
-examples/*/cart.wasm
+template/main.wasm
+examples/*/main.wasm

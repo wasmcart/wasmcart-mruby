@@ -2,6 +2,6 @@
   "name": "flappy-wyvern",
   "version": "0.1.0",
   "abi": 3,
-  "entry": "cart.wasm",
+  "entry": "main.wasm",
   "assets": "app"
 }
