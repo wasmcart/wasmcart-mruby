@@ -16,17 +16,52 @@ desktop testing still feels natural). If your game leans on typing or mouse
 aiming, redesign that interaction first - everything else below is
 mechanical.
 
-## What ports directly
+## Coverage at a glance
 
-If your game lives in `tick args` and uses these, it ports with little or no
-change:
+Rule of thumb: the code a typical 2D arcade game is *made of* is ~85%
+covered; DragonRuby's full documented surface is ~40%, and most of the
+remainder is desktop/OS glue a sandboxed cartridge deliberately excludes.
 
-- `args.outputs.solids / sprites / labels / lines / borders / sounds`
-- `args.inputs.controller_one` (or `.keyboard` d-pad/A/B-style checks)
-- `args.state` (including `||=` init and `new_entity`)
-- `args.geometry.intersect_rect?` and friends, `args.tick_count`
-- sprites as PNGs, including spritesheet `source_x/y/w/h`, flips, `angle`
-- sound effects as WAVs, `rand`-driven logic, `puts` debugging
+**Ports directly (✓):**
+
+- the `tick args` loop, 60fps, bottom-left 1280x720
+- `args.outputs.solids / sprites / borders / lines / labels / primitives /
+  debug / static_* / background_color` and **render targets**
+  (`args.outputs[:name]`, drawn via `path: :name`)
+- sprites: PNG, spritesheet `source_x/y/w/h`, flips, `angle`, r/g/b/a tint
+- `primitives` z-ordering with inferred or explicit `primitive_marker`;
+  `attr_sprite` / `attr_rect` / `attr_label` / `attr_line` object shoveling
+- `args.inputs.controller_one`: all buttons, `key_down` edges, analog sticks
+- `args.state` (`||=` init, `new_entity`), `args.tick_count` /
+  `Kernel#tick_count` / `args.state.tick_count`
+- `args.geometry`: `intersect_rect?`, `inside_rect?`, `point_inside_rect?`,
+  `distance`, `angle_to`/`angle_from`, `center`, `scale_rect`
+- `args.easing.ease` (identity/flip/quad/cube/quart/quint/smooth variants)
+- sounds as WAVs incl. `args.audio` channels with gain and looping
+- multi-file games via `require`, `puts` debugging, `rand` (deterministic
+  under seeded replay)
+
+**Partial (works, differently):**
+
+| DragonRuby | Here |
+|---|---|
+| TTF fonts, `size_enum` | built-in 5x7 bitfont; `size_px` pixel scale, `alignment_enum` 0/1/2 only |
+| deep `args.state.player.x` auto-nesting | initialize first: `args.state.player ||= args.state.new_entity(:player)` |
+| `args.audio` seek/pitch/pause, OGG | play/gain/looping/stop, WAV only |
+| `args.grid.origin_center!` | fixed bottom-left origin |
+| engine hot-reload while running | dev-mode directory: edit Ruby, reload the cart (a second or two) |
+
+**Not yet, but cart-possible (the roadmap):**
+`controller_two`-`four` (the ABI has 4 pads; the engine passes pad 0 today),
+`Numeric#frame_index`/`elapsed_time` animation sugar, `calcstringbox`,
+`line_intersect?`/`find_intersect_rect`/beziers, `args.outputs.screenshots`,
+`parse_json` (an mruby gem away), `Regexp` (likewise).
+
+**Never (by design, not laziness):** mouse/touch and full keyboard (gamepad
+console), and the `$gtk` desktop glue: `read_file`/`write_file` (SRAM
+instead), `http_get` (networking is wasmcart's own opt-in ABI), `openurl`,
+`system`, C extensions. A cart is pure compute over the ABI; that's what
+makes it safe and portable.
 
 ## What needs adapting
 

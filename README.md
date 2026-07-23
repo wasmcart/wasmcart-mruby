@@ -95,6 +95,18 @@ the primary input):
   hiscore)
 - `args.gtk.debug_mark id` and harness debug slots - see Observability below
 
+## How much of DragonRuby's API?
+
+The core a 2D arcade game actually touches is ~85% covered: all output
+collections including render targets and primitives z-ordering, attr_sprite
+objects, gamepad input with analog, state, the core geometry and easing
+helpers, WAV audio channels, SRAM persistence, multi-file `require`.
+Measured against DragonRuby's entire documented surface it's ~40%; most of
+the gap is desktop/OS glue (files, HTTP, windowing, mouse) that a sandboxed
+gamepad cartridge deliberately excludes. The full matrix, including partial
+implementations and the roadmap, lives in
+[docs/porting-a-ruby-game.md](docs/porting-a-ruby-game.md).
+
 ## Porting an existing Ruby game
 
 Already have a game written in these idioms? See
