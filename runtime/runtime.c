@@ -650,15 +650,17 @@ WC_EXPORT_RENDER void wc_render(void) {
     for (int i = 0; i < DEFAULT_WIDTH * DEFAULT_HEIGHT; i++) wc_framebuffer[i] = bg_color;
 
     if (mrb && dbg_ruby_ok) {
-        wc_pad_t *p = &wc_pads[0];
-        mrb_value argv[5] = {
-            mrb_int_value(mrb, (mrb_int)p->buttons),
-            mrb_int_value(mrb, (mrb_int)p->left_x),
-            mrb_int_value(mrb, (mrb_int)p->left_y),
-            mrb_int_value(mrb, (mrb_int)p->right_x),
-            mrb_int_value(mrb, (mrb_int)p->right_y),
-        };
-        mrb_funcall_argv(mrb, mrb_top_self(mrb), mrb_intern_lit(mrb, "__wasmcart_frame"), 5, argv);
+        /* all four pads: buttons + both sticks each (controller_one..four) */
+        mrb_value argv[20];
+        for (int p = 0; p < 4; p++) {
+            wc_pad_t *pd = &wc_pads[p];
+            argv[p * 5 + 0] = mrb_int_value(mrb, (mrb_int)pd->buttons);
+            argv[p * 5 + 1] = mrb_int_value(mrb, (mrb_int)pd->left_x);
+            argv[p * 5 + 2] = mrb_int_value(mrb, (mrb_int)pd->left_y);
+            argv[p * 5 + 3] = mrb_int_value(mrb, (mrb_int)pd->right_x);
+            argv[p * 5 + 4] = mrb_int_value(mrb, (mrb_int)pd->right_y);
+        }
+        mrb_funcall_argv(mrb, mrb_top_self(mrb), mrb_intern_lit(mrb, "__wasmcart_frame"), 20, argv);
         ruby_guard("tick");
         rt_buf = NULL; /* never leave a frame aimed at a render target */
     }

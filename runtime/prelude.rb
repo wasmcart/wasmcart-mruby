@@ -118,11 +118,18 @@ class KeyEdges
 end
 
 class Inputs
-  attr_reader :keyboard, :controller_one
+  attr_reader :keyboard, :controllers,
+              :controller_one, :controller_two, :controller_three, :controller_four
 
-  def initialize(bits, prev_bits, lx, ly, rx, ry)
-    @keyboard = Keys.new(bits, prev_bits, lx, ly, rx, ry)
-    @controller_one = @keyboard
+  # pads: [[bits, lx, ly, rx, ry] x4], prevs: previous frame's button bits x4
+  def initialize(pads, prevs)
+    @controllers = []
+    4.times do |i|
+      p = pads[i] || [0, 0, 0, 0, 0]
+      @controllers << Keys.new(p[0], prevs[i] || 0, p[1], p[2], p[3], p[4])
+    end
+    @controller_one, @controller_two, @controller_three, @controller_four = @controllers
+    @keyboard = @controller_one
   end
 end
 
@@ -286,6 +293,37 @@ module Geometry
     nh = h * ratio
     [x + (w - nw) * anchor_x, y + (h - nh) * anchor_y, nw, nh]
   end
+
+  def self.line(l)
+    if l.is_a?(Hash)
+      [l[:x] || 0, l[:y] || 0, l[:x2] || 0, l[:y2] || 0]
+    elsif l.is_a?(Array)
+      l
+    else
+      [l.x || 0, l.y || 0, l.x2 || 0, l.y2 || 0]
+    end
+  end
+
+  # do two line SEGMENTS cross?
+  def self.line_intersect?(l1, l2)
+    ax, ay, bx, by = line(l1)
+    cx, cy, dx, dy = line(l2)
+    d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
+    d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
+    d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  end
+
+  def self.find_intersect_rect(r, rects)
+    rects.each { |o| return o if intersect_rect?(r, o) }
+    nil
+  end
+
+  def self.find_all_intersect_rect(r, rects)
+    rects.select { |o| intersect_rect?(r, o) }
+  end
 end
 
 # ── easing (args.easing.ease) ────────────────────────────────────────
@@ -334,6 +372,34 @@ class Numeric
   def sign
     return 0 if self == 0
     self > 0 ? 1 : -1
+  end
+
+  # ticks since self (treating self as a start tick)
+  def elapsed_time(now = nil)
+    (now || tick_count) - self
+  end
+
+  # DragonRuby's sprite-animation one-liner. self = the tick the animation
+  # started. Returns the current frame number, or nil when not started /
+  # finished (non-repeating).
+  #   sprite.source_x = 24 * (started_at.frame_index(4, 6, true) || 0)
+  def frame_index(count = nil, hold_for = nil, repeat = nil, repeat_index = 0)
+    if count.is_a?(Hash)
+      h = count
+      count = h[:count]
+      hold_for = h[:hold_for] || 1
+      repeat = h[:repeat]
+      repeat_index = h[:repeat_index] || 0
+    end
+    hold_for = 1 if hold_for.nil? || hold_for < 1
+    elapsed = tick_count - self
+    return nil if elapsed < 0 || count.nil? || count < 1
+    idx = elapsed / hold_for
+    return idx if idx < count
+    return nil unless repeat
+    loop_len = count - repeat_index
+    return repeat_index if loop_len < 1
+    repeat_index + ((idx - count) % loop_len)
   end
 end
 
@@ -412,6 +478,13 @@ class Gtk
   def load_u32(slot)
     WC.load_u32(slot.to_i)
   end
+
+  # [w, h] a label with this text/size will occupy (the built-in bitfont)
+  def calcstringbox(text, size_px = 3)
+    len = text.to_s.length
+    w = len > 0 ? (6 * len - 1) * size_px : 0
+    [w, 8 * size_px]
+  end
 end
 
 class Args
@@ -457,7 +530,7 @@ module Kernel
   # DragonRuby-style require: loads another .rb from the cart's assets, once.
   def require(path)
     p = path.to_s
-    p = p[4..-1] if p.start_with?('app/')  # no Regexp in this mruby build
+    p = p[4..-1] if p.start_with?('app/')
     p += '.rb' unless p.end_with?('.rb')
     $__wc_required ||= {}
     return false if $__wc_required[p]
@@ -467,7 +540,7 @@ module Kernel
 end
 
 $args = Wasmcart::Args.new
-$__wc_prev_bits = 0
+$__wc_prev_pads = [0, 0, 0, 0]
 $__wc_tick = 0
 
 # ── the renderer: hash / array / object primitives, one code path ────
@@ -645,10 +718,12 @@ def __wc_flush(outputs)
   end
 end
 
-# Called by the C engine once per frame: pad-0 buttons + analog sticks.
-def __wasmcart_frame(bits, lx, ly, rx, ry)
+# Called by the C engine once per frame: 4 pads x (buttons, lx, ly, rx, ry).
+def __wasmcart_frame(*v)
   args = $args
-  args.inputs = Wasmcart::Inputs.new(bits, $__wc_prev_bits, lx, ly, rx, ry)
+  pads = [v[0, 5], v[5, 5], v[10, 5], v[15, 5]]
+  $__wc_prev_pads ||= [0, 0, 0, 0]
+  args.inputs = Wasmcart::Inputs.new(pads, $__wc_prev_pads)
   args.outputs.clear_frame!
   args.state.tick_count = $__wc_tick
 
@@ -656,7 +731,7 @@ def __wasmcart_frame(bits, lx, ly, rx, ry)
 
   __wc_flush(args.outputs)
   args.audio.sync!
-  $__wc_prev_bits = bits
+  $__wc_prev_pads = [pads[0][0], pads[1][0], pads[2][0], pads[3][0]]
   $__wc_tick += 1
   nil
 end

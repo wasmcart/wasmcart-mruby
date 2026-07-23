@@ -10,6 +10,7 @@ end
 
 MRuby::CrossBuild.new('emscripten') do |conf|
   conf.toolchain :clang
+  conf.host_target = 'i686-pc-linux-gnu'  # old config.subs reject wasm triples; runtime checks execute under node anyway
   conf.cc.command = 'emcc'
   conf.cc.flags << '-Os'
   conf.cc.flags << '-sSUPPORT_LONGJMP=wasm'
@@ -32,4 +33,7 @@ MRuby::CrossBuild.new('emscripten') do |conf|
   conf.gem core: 'mruby-kernel-ext'
   conf.gem core: 'mruby-metaprog'
   conf.gem core: 'mruby-error'
+  # porting-gap closers: Regexp + JSON (fetched from GitHub at build time)
+  conf.gem github: 'mattn/mruby-onig-regexp'
+  conf.gem github: 'mattn/mruby-json'
 end

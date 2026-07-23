@@ -1,0 +1,17 @@
+---
+mruby:
+  version: 3.4.0
+  release_no: 30400
+  git_commit: a309524d0bc90eef077a24634db2495a6f68e318
+builds:
+  emscripten:
+    https://github.com/mattn/mruby-onig-regexp.git:
+      url: https://github.com/mattn/mruby-onig-regexp.git
+      branch: master
+      commit: 4962d7eb42de079f6b3faec4b40560eb2941eeec
+      version: 0.0.0
+    https://github.com/mattn/mruby-json.git:
+      url: https://github.com/mattn/mruby-json.git
+      branch: master
+      commit: f99d9428025469f2400f93c53b185f65f963e507
+      version: 0.0.0

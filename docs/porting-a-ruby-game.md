@@ -18,9 +18,10 @@ mechanical.
 
 ## Coverage at a glance
 
-Rule of thumb: the code a typical 2D arcade game is *made of* is ~85%
-covered; DragonRuby's full documented surface is ~40%, and most of the
-remainder is desktop/OS glue a sandboxed cartridge deliberately excludes.
+Rule of thumb: the code a typical 2D arcade game is *made of* is ~95%
+covered; DragonRuby's full documented surface is roughly half, and most of
+the remainder is desktop/OS glue a sandboxed cartridge deliberately
+excludes.
 
 **Ports directly (✓):**
 
@@ -51,11 +52,14 @@ remainder is desktop/OS glue a sandboxed cartridge deliberately excludes.
 | `args.grid.origin_center!` | fixed bottom-left origin |
 | engine hot-reload while running | dev-mode directory: edit Ruby, reload the cart (a second or two) |
 
+**Also covered now:** `controller_one` through `controller_four` (+
+`args.inputs.controllers`), `Numeric#frame_index` / `elapsed_time`,
+`args.gtk.calcstringbox`, `line_intersect?` / `find_intersect_rect` /
+`find_all_intersect_rect`, full `Regexp` (onigmo), and `JSON.parse` /
+`#to_json`.
+
 **Not yet, but cart-possible (the roadmap):**
-`controller_two`-`four` (the ABI has 4 pads; the engine passes pad 0 today),
-`Numeric#frame_index`/`elapsed_time` animation sugar, `calcstringbox`,
-`line_intersect?`/`find_intersect_rect`/beziers, `args.outputs.screenshots`,
-`parse_json` (an mruby gem away), `Regexp` (likewise).
+beziers/`ray_test`, `args.outputs.screenshots`, audio seek/pitch, OGG.
 
 **Never (by design, not laziness):** mouse/touch and full keyboard (gamepad
 console), and the `$gtk` desktop glue: `read_file`/`write_file` (SRAM

@@ -47,7 +47,7 @@ def tick args
   s.bird.x = px + 60
   s.bird.y = 150
   s.bird.angle = Math.sin(args.tick_count / 12.0) * 15
-  s.bird.source_x = (args.tick_count % 20 < 10) ? 0 : 24
+  s.bird.source_x = 24 * (0.frame_index(2, 10, true) || 0)
   args.outputs.primitives << s.bird
   args.outputs.primitives << { x: px + 110, y: 260, text: 'primitives!', size_px: 3,
                                alignment_enum: 1, r: 255, g: 255, b: 255 }

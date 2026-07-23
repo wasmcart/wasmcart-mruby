@@ -97,13 +97,14 @@ the primary input):
 
 ## How much of DragonRuby's API?
 
-The core a 2D arcade game actually touches is ~85% covered: all output
-collections including render targets and primitives z-ordering, attr_sprite
-objects, gamepad input with analog, state, the core geometry and easing
-helpers, WAV audio channels, SRAM persistence, multi-file `require`.
-Measured against DragonRuby's entire documented surface it's ~40%; most of
-the gap is desktop/OS glue (files, HTTP, windowing, mouse) that a sandboxed
-gamepad cartridge deliberately excludes. The full matrix, including partial
+The core a 2D arcade game actually touches is ~95% covered: every output
+collection including render targets and primitives z-ordering, attr_sprite
+objects, four controllers with analog, state, geometry (including the
+intersection finders), easing, `frame_index` animation sugar, WAV audio
+channels, SRAM persistence, multi-file `require`, plus full `Regexp` and
+`JSON`. Measured against DragonRuby's entire documented surface it's roughly
+half; most of the gap is desktop/OS glue (files, HTTP, windowing, mouse)
+that a sandboxed gamepad cartridge deliberately excludes. The full matrix, including partial
 implementations and the roadmap, lives in
 [docs/porting-a-ruby-game.md](docs/porting-a-ruby-game.md).
 

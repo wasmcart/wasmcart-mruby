@@ -10,7 +10,7 @@ MRUBY_TAG=3.4.0
 if [ ! -f vendor/mruby/build/emscripten/lib/libmruby.a ]; then
   mkdir -p vendor
   [ -d vendor/mruby ] || git clone --depth 1 --branch "$MRUBY_TAG" https://github.com/mruby/mruby.git vendor/mruby
-  (cd vendor/mruby && rake MRUBY_CONFIG=../../mruby_wasm_config.rb)
+  (CFG="$(pwd)/mruby_wasm_config.rb"; cd vendor/mruby && rake MRUBY_CONFIG="$CFG")
 fi
 
 # embed the Ruby surface into the wasm (games ship only their own Ruby)
