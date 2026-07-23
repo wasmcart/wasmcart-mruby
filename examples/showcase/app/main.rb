@@ -21,7 +21,8 @@ def tick args
   if args.tick_count == 0
     args.outputs.static_borders << [20, 20, 1240, 680, 90, 100, 150]
     args.outputs.static_labels << { x: 640, y: 700, text: 'wyvern api showcase',
-                                    size_px: 5, alignment_enum: 1, r: 255, g: 240, b: 120 }
+                                    size_px: 5, alignment_enum: 1, r: 255, g: 240, b: 120,
+                                    font: 'fonts/DejaVuSans.ttf' }
     args.audio[:music] = { input: 'sounds/score.wav', gain: 0.4, looping: true }
   end
 

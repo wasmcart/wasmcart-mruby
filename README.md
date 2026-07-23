@@ -64,7 +64,7 @@ bottom-left-origin canvas.
 | `args.outputs.static_*` | persist across ticks (shovel once) for every collection |
 | `args.outputs[:name]` | **render target**: shovel into it, then draw it as a sprite with `path: :name` (rotate/scale/tint it like any sprite) |
 | `args.outputs.sounds` | `'sounds/jump.wav'` (16 mixer voices), `{path:, gain:, looping:}`, or `{freq:, frames:}` beeps |
-| `args.audio[:music] = { input:, gain:, looping: }` | persistent audio channels; mutate `gain`, `delete` to stop |
+| `args.audio[:music] = { input:, gain:, looping:, pitch:, paused:, playtime: }` | persistent channels: live gain/pitch/pause, playtime seek; WAV and OGG |
 | `args.outputs.background_color` | `[r, g, b]` |
 
 Primitives can also be **objects**: `class Foo; attr_sprite; end` (or
@@ -101,8 +101,8 @@ The core a 2D arcade game actually touches is ~95% covered: every output
 collection including render targets and primitives z-ordering, attr_sprite
 objects, four controllers with analog, state, geometry (including the
 intersection finders), easing, `frame_index` animation sugar, WAV audio
-channels, SRAM persistence, multi-file `require`, plus full `Regexp` and
-`JSON`. Measured against DragonRuby's entire documented surface it's roughly
+channels, SRAM persistence, multi-file `require`, plus full `Regexp`,
+`JSON`, TTF fonts, OGG audio, and bezier/ray geometry. Measured against DragonRuby's entire documented surface it's roughly
 half; most of the gap is desktop/OS glue (files, HTTP, windowing, mouse)
 that a sandboxed gamepad cartridge deliberately excludes. The full matrix, including partial
 implementations and the roadmap, lives in

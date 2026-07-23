@@ -46,20 +46,21 @@ excludes.
 
 | DragonRuby | Here |
 |---|---|
-| TTF fonts, `size_enum` | built-in 5x7 bitfont; `size_px` pixel scale, `alignment_enum` 0/1/2 only |
+| TTF fonts | Yes: `font: 'fonts/foo.ttf'` on labels (anti-aliased, kerned, alpha). `size_px` is the scale knob (8px of glyph height per unit, matching the bitfont); no `size_enum`, `alignment_enum` 0/1/2 only |
 | deep `args.state.player.x` auto-nesting | initialize first: `args.state.player ||= args.state.new_entity(:player)` |
-| `args.audio` seek/pitch/pause, OGG | play/gain/looping/stop, WAV only |
 | `args.grid.origin_center!` | fixed bottom-left origin |
 | engine hot-reload while running | dev-mode directory: edit Ruby, reload the cart (a second or two) |
 
 **Also covered now:** `controller_one` through `controller_four` (+
 `args.inputs.controllers`), `Numeric#frame_index` / `elapsed_time`,
-`args.gtk.calcstringbox`, `line_intersect?` / `find_intersect_rect` /
-`find_all_intersect_rect`, full `Regexp` (onigmo), and `JSON.parse` /
-`#to_json`.
+`args.gtk.calcstringbox` (TTF-aware), `line_intersect?` /
+`find_intersect_rect` / `find_all_intersect_rect`, `cubic_bezier` / `bezier`
+/ `ray_test` / `rotate_point`, full `Regexp` (onigmo), `JSON.parse` /
+`#to_json`, **OGG audio assets**, and `args.audio` channel `pitch:`,
+`paused:`, and `playtime:` (read = position, write = seek).
 
-**Not yet, but cart-possible (the roadmap):**
-beziers/`ray_test`, `args.outputs.screenshots`, audio seek/pitch, OGG.
+**Not implemented:** `args.outputs.screenshots` (a harness screenshots from
+outside the cart), `size_enum` font sizing, `origin_center!`.
 
 **Never (by design, not laziness):** mouse/touch and full keyboard (gamepad
 console), and the `$gtk` desktop glue: `read_file`/`write_file` (SRAM
@@ -74,7 +75,7 @@ makes it safe and portable.
 | `require 'app/foo.rb'` | Works - files load from cart assets (no Regexp class in the build, plain paths only) |
 | TTF fonts, `size_enum` | Built-in 5x7 bitfont; use `size_px` (pixel scale) and `alignment_enum` 0/1/2 |
 | Mouse / full keyboard | Gamepad only - see above |
-| `args.audio[:music] = {...}` | Works: persistent channels, gain, looping, delete-to-stop |
+| `args.audio[:music] = {...}` | Works: gain, looping, pitch, paused, playtime seek, delete-to-stop; WAV + OGG |
 | `$gtk.write_file` / reading files | Cart SRAM: `args.gtk.save_u32 slot, v` / `load_u32 slot` (64 slots, persisted by hosts as `<cart>.sav`, savestate-safe in RetroArch) |
 | Render targets, easing, `args.outputs.static_*` | Not implemented - restructure or draw per tick |
 | `Regexp`, `File`, `Dir`, threads | Not in the sandbox - carts are pure compute over the ABI |

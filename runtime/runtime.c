@@ -33,6 +33,15 @@
 #define WC_PCM_MIXER_IMPLEMENTATION
 #include "wc_pcm_mixer.h"
 
+/* OGG Vorbis decode (music-sized audio assets) */
+#define STB_VORBIS_NO_STDIO
+#define STB_VORBIS_NO_PUSHDATA_API
+#include "stb_vorbis.c"
+
+/* TTF rasterizing for labels (font: 'fonts/foo.ttf') */
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
 #include <mruby.h>
 #include <mruby/compile.h>
 #include <mruby/string.h>
@@ -146,7 +155,7 @@ static void border_rect(int x, int y, int w, int h, uint32_t c, int a) {
     fill_rect(x + w - 2, y, 2, h, c, a);
 }
 
-static void draw_line(int x0, int y0, int x1, int y1, uint32_t c, int a) {
+static void raster_line(int x0, int y0, int x1, int y1, uint32_t c, int a) {
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
@@ -316,6 +325,104 @@ static void draw_label(int x, int y_top, const char *s, int scale, uint32_t c) {
     }
 }
 
+/* ── TTF fonts: baked-atlas cache per (path, pixel height) ──────────── */
+
+#define MAX_FONTS 8
+#define TTF_FIRST_CHAR 32
+#define TTF_CHAR_COUNT 95
+typedef struct {
+    char path[160];
+    int px;                   /* baked pixel height */
+    unsigned char *atlas;     /* 8-bit coverage */
+    int aw, ah;
+    stbtt_bakedchar chars[TTF_CHAR_COUNT];
+    int active;
+} font_t;
+static font_t fonts[MAX_FONTS];
+static int font_rr; /* round-robin eviction */
+
+static font_t *font_get(const char *path, int px) {
+    if (px < 6) px = 6;
+    if (px > 256) px = 256;
+    for (int i = 0; i < MAX_FONTS; i++)
+        if (fonts[i].active && fonts[i].px == px && strcmp(fonts[i].path, path) == 0)
+            return &fonts[i];
+    int size = wc_asset_size(path, (unsigned int)strlen(path));
+    if (size <= 0) {
+        char line[200];
+        snprintf(line, sizeof line, "font asset not found: %s", path);
+        wc_log(line, (unsigned int)strlen(line));
+        return NULL;
+    }
+    unsigned char *buf = malloc((size_t)size);
+    if (!buf) return NULL;
+    wc_load_asset(path, (unsigned int)strlen(path), buf, (unsigned int)size);
+
+    font_t *f = NULL;
+    for (int i = 0; i < MAX_FONTS; i++) if (!fonts[i].active) { f = &fonts[i]; break; }
+    if (!f) { f = &fonts[font_rr]; font_rr = (font_rr + 1) % MAX_FONTS; free(f->atlas); f->atlas = NULL; }
+
+    int aw = 256;
+    while (aw < px * 12 && aw < 2048) aw *= 2; /* room for 95 glyphs */
+    int ah = aw;
+    f->atlas = malloc((size_t)aw * ah);
+    if (!f->atlas) { free(buf); return NULL; }
+    int res = stbtt_BakeFontBitmap(buf, 0, (float)px, f->atlas, aw, ah,
+                                   TTF_FIRST_CHAR, TTF_CHAR_COUNT, f->chars);
+    free(buf);
+    if (res <= 0 && res != -TTF_CHAR_COUNT) {
+        /* res<0 = -glyphs_that_fit; retry bigger once */
+        free(f->atlas);
+        aw = ah = aw * 2 <= 2048 ? aw * 2 : 2048;
+        f->atlas = malloc((size_t)aw * ah);
+        if (!f->atlas) return NULL;
+        buf = malloc((size_t)size);
+        if (!buf) return NULL;
+        wc_load_asset(path, (unsigned int)strlen(path), buf, (unsigned int)size);
+        stbtt_BakeFontBitmap(buf, 0, (float)px, f->atlas, aw, ah,
+                             TTF_FIRST_CHAR, TTF_CHAR_COUNT, f->chars);
+        free(buf);
+    }
+    f->aw = aw; f->ah = ah; f->px = px;
+    snprintf(f->path, sizeof f->path, "%s", path);
+    f->active = 1;
+    return f;
+}
+
+/* y_top = top of the text box (like the bitfont); baseline sits px*0.8 below */
+static void draw_label_ttf(font_t *f, int x, int y_top, const char *s,
+                           uint32_t c, int a) {
+    float pen_x = (float)x;
+    float baseline = (float)y_top - f->px * 0.8f;
+    for (; *s; s++) {
+        int ch = (unsigned char)*s;
+        if (ch < TTF_FIRST_CHAR || ch >= TTF_FIRST_CHAR + TTF_CHAR_COUNT) { pen_x += f->px * 0.4f; continue; }
+        stbtt_bakedchar *b = &f->chars[ch - TTF_FIRST_CHAR];
+        int gw = b->x1 - b->x0, gh = b->y1 - b->y0;
+        int gx = (int)(pen_x + b->xoff);
+        /* yoff is from baseline to glyph top in screen-down coords */
+        int gy_top = (int)(baseline - b->yoff); /* bottom-left coords: up is + */
+        for (int row = 0; row < gh; row++) {
+            for (int col = 0; col < gw; col++) {
+                int cov = f->atlas[(b->y0 + row) * f->aw + (b->x0 + col)];
+                if (!cov) continue;
+                blend_px(gx + col, gy_top - row, c, cov * a / 255);
+            }
+        }
+        pen_x += b->xadvance;
+    }
+}
+
+static int measure_ttf(font_t *f, const char *s) {
+    float w = 0;
+    for (; *s; s++) {
+        int ch = (unsigned char)*s;
+        if (ch < TTF_FIRST_CHAR || ch >= TTF_FIRST_CHAR + TTF_CHAR_COUNT) { w += f->px * 0.4f; continue; }
+        w += f->chars[ch - TTF_FIRST_CHAR].xadvance;
+    }
+    return (int)(w + 0.5f);
+}
+
 /* ── sound cache: WAV assets + generated beeps, all through the mixer ─ */
 
 #define MAX_SOUND_PATHS 32
@@ -337,7 +444,24 @@ static int sound_get(const char *path) {
     unsigned char *buf = malloc((size_t)size);
     if (!buf) return -1;
     wc_load_asset(path, (unsigned int)strlen(path), buf, (unsigned int)size);
-    int id = wc_mixer_load_wav(buf, size);
+    int id;
+    size_t plen2 = strlen(path);
+    if (plen2 > 4 && strcmp(path + plen2 - 4, ".ogg") == 0) {
+        int chans = 0, rate = 0;
+        short *pcm = NULL;
+        int frames = stb_vorbis_decode_memory(buf, size, &chans, &rate, &pcm);
+        if (frames > 0 && pcm) {
+            id = wc_mixer_load_raw(pcm, frames, chans > 1 ? 2 : 1, rate);
+            free(pcm);
+        } else {
+            char line[200];
+            snprintf(line, sizeof line, "ogg decode failed: %s", path);
+            wc_log(line, (unsigned int)strlen(line));
+            id = -1;
+        }
+    } else {
+        id = wc_mixer_load_wav(buf, size);
+    }
     free(buf);
     sound_entry_t *e = &sound_paths[sound_path_count++];
     snprintf(e->path, sizeof e->path, "%s", path);
@@ -403,7 +527,7 @@ static mrb_value wy_border(mrb_state *m, mrb_value self) {
 static mrb_value wy_line(mrb_state *m, mrb_value self) {
     mrb_int x, y, x2, y2, r, g, b, a;
     mrb_get_args(m, "iiiiiiii", &x, &y, &x2, &y2, &r, &g, &b, &a);
-    draw_line((int)x, (int)y, (int)x2, (int)y2, rgb(r, g, b), (int)a);
+    raster_line((int)x, (int)y, (int)x2, (int)y2, rgb(r, g, b), (int)a);
     return mrb_nil_value();
 }
 
@@ -425,16 +549,92 @@ static mrb_value wy_sprite(mrb_state *m, mrb_value self) {
 }
 
 static mrb_value wy_label(mrb_state *m, mrb_value self) {
-    mrb_int x, y, scale, r, g, b;
+    mrb_int x, y, scale, r, g, b, a;
     const char *s; mrb_int slen;
-    mrb_get_args(m, "iis!iiii", &x, &y, &s, &slen, &scale, &r, &g, &b);
-    if (s) {
-        char buf[128];
-        mrb_int n = slen < 127 ? slen : 127;
-        memcpy(buf, s, n); buf[n] = 0;
-        draw_label((int)x, (int)y, buf, (int)scale, rgb(r, g, b));
+    const char *font; mrb_int flen;
+    mrb_get_args(m, "iis!iiiiis!", &x, &y, &s, &slen, &scale, &r, &g, &b, &a, &font, &flen);
+    if (!s) return mrb_nil_value();
+    char buf[256];
+    mrb_int n = slen < 255 ? slen : 255;
+    memcpy(buf, s, n); buf[n] = 0;
+    if (font && flen > 0) {
+        char fbuf[160];
+        mrb_int fn = flen < 159 ? flen : 159;
+        memcpy(fbuf, font, fn); fbuf[fn] = 0;
+        font_t *f = font_get(fbuf, (int)scale * 8); /* size_px parity with the bitfont */
+        if (f) { draw_label_ttf(f, (int)x, (int)y, buf, rgb(r, g, b), (int)a); return mrb_nil_value(); }
+    }
+    /* bitfont path (alpha honored) */
+    if (a >= 255) draw_label((int)x, (int)y, buf, (int)scale, rgb(r, g, b));
+    else {
+        int scale_i = (int)scale < 1 ? 1 : (int)scale;
+        int cx = (int)x;
+        for (char *p = buf; *p; p++) {
+            const uint8_t *gl = FONT[glyph_index(*p)];
+            for (int row = 0; row < 7; row++)
+                for (int col = 0; col < 5; col++)
+                    if (gl[row] & (0x10 >> col))
+                        fill_rect(cx + col * scale_i, (int)y - (row + 1) * scale_i, scale_i, scale_i, rgb(r, g, b), (int)a);
+            cx += 6 * scale_i;
+        }
     }
     return mrb_nil_value();
+}
+
+/* [w, h] a label will occupy; TTF-aware (font "" = bitfont) */
+static mrb_value wy_text_size(mrb_state *m, mrb_value self) {
+    const char *s; mrb_int slen;
+    mrb_int scale;
+    const char *font; mrb_int flen;
+    mrb_get_args(m, "s!is!", &s, &slen, &scale, &font, &flen);
+    char buf[256];
+    mrb_int n = (s && slen < 255) ? slen : (s ? 255 : 0);
+    if (s) memcpy(buf, s, n);
+    buf[n] = 0;
+    mrb_value out = mrb_ary_new_capa(m, 2);
+    if (font && flen > 0) {
+        char fbuf[160];
+        mrb_int fn = flen < 159 ? flen : 159;
+        memcpy(fbuf, font, fn); fbuf[fn] = 0;
+        font_t *f = font_get(fbuf, (int)scale * 8);
+        if (f) {
+            mrb_ary_push(m, out, mrb_int_value(m, measure_ttf(f, buf)));
+            mrb_ary_push(m, out, mrb_int_value(m, f->px));
+            return out;
+        }
+    }
+    int len = (int)strlen(buf);
+    mrb_ary_push(m, out, mrb_int_value(m, len > 0 ? (6 * len - 1) * (int)scale : 0));
+    mrb_ary_push(m, out, mrb_int_value(m, 8 * (int)scale));
+    return out;
+}
+
+/* audio channel controls (mixer passthroughs) */
+static mrb_value wy_sound_pitch(mrb_state *m, mrb_value self) {
+    mrb_int ch; mrb_float p;
+    mrb_get_args(m, "if", &ch, &p);
+    wc_mixer_set_pitch((int)ch, (float)p);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_sound_paused(mrb_state *m, mrb_value self) {
+    mrb_int ch, p;
+    mrb_get_args(m, "ii", &ch, &p);
+    wc_mixer_set_paused((int)ch, (int)p);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_sound_seek(mrb_state *m, mrb_value self) {
+    mrb_int ch; mrb_float sec;
+    mrb_get_args(m, "if", &ch, &sec);
+    wc_mixer_seek((int)ch, (float)sec);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_sound_playtime(mrb_state *m, mrb_value self) {
+    mrb_int ch;
+    mrb_get_args(m, "i", &ch);
+    return mrb_float_value(m, wc_mixer_playtime((int)ch));
 }
 
 static mrb_value wy_log(mrb_state *m, mrb_value self) {
@@ -617,7 +817,12 @@ WC_EXPORT_INIT void wc_init(void) {
     mrb_define_module_function(mrb, wc, "border",     wy_border,     MRB_ARGS_REQ(8));
     mrb_define_module_function(mrb, wc, "line",       wy_line,       MRB_ARGS_REQ(8));
     mrb_define_module_function(mrb, wc, "sprite",     wy_sprite,     MRB_ARGS_REQ(17));
-    mrb_define_module_function(mrb, wc, "label",      wy_label,      MRB_ARGS_REQ(7));
+    mrb_define_module_function(mrb, wc, "label",      wy_label,      MRB_ARGS_REQ(9));
+    mrb_define_module_function(mrb, wc, "text_size",  wy_text_size,  MRB_ARGS_REQ(3));
+    mrb_define_module_function(mrb, wc, "sound_pitch",  wy_sound_pitch,  MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "sound_paused", wy_sound_paused, MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "sound_seek",   wy_sound_seek,   MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "sound_playtime", wy_sound_playtime, MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "log",        wy_log,        MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "mark",       wy_mark,       MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "beep",       wy_beep,       MRB_ARGS_REQ(2));

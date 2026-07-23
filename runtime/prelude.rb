@@ -324,6 +324,45 @@ module Geometry
   def self.find_all_intersect_rect(r, rects)
     rects.select { |o| intersect_rect?(r, o) }
   end
+
+  # cubic bezier over scalars (use per axis), t in 0..1
+  def self.cubic_bezier(t, a, b, c, d)
+    u = 1.0 - t
+    (u * u * u * a) + (3 * u * u * t * b) + (3 * u * t * t * c) + (t * t * t * d)
+  end
+
+  # de Casteljau over any number of scalar control points
+  def self.bezier(t, *points)
+    pts = points.flatten
+    while pts.length > 1
+      nxt = []
+      (pts.length - 1).times { |i| nxt << pts[i] + (pts[i + 1] - pts[i]) * t }
+      pts = nxt
+    end
+    pts[0]
+  end
+
+  # which side of the line (as a ray a->b) does the point fall on?
+  # :left, :right, or :on - DragonRuby's ray_test
+  def self.ray_test(point, l)
+    px, py = xy(point)
+    ax, ay, bx, by = line(l)
+    d = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    return :on if d == 0
+    d > 0 ? :left : :right
+  end
+
+  # rotate a point by degrees around an anchor (default the origin)
+  def self.rotate_point(point, angle_degrees, around = nil)
+    px, py = xy(point)
+    cx, cy = around ? xy(around) : [0, 0]
+    rad = angle_degrees * Math::PI / 180.0
+    cs = Math.cos(rad)
+    sn = Math.sin(rad)
+    dx = px - cx
+    dy = py - cy
+    [cx + dx * cs - dy * sn, cy + dx * sn + dy * cs]
+  end
 end
 
 # ── easing (args.easing.ease) ────────────────────────────────────────
@@ -419,7 +458,12 @@ class Audio
     gain = (opts[:gain] || 1.0).to_f
     looping = opts[:looping] ? 1 : 0
     ch = WC.sound(path, gain, looping)
-    @entries[key] = { opts: opts, channel: ch, gain: gain } if ch >= 0
+    if ch >= 0
+      @entries[key] = { opts: opts, channel: ch, gain: gain, pitch: 1.0, paused: false, playtime: 0.0 }
+      WC.sound_pitch(ch, opts[:pitch].to_f) if opts[:pitch]
+      WC.sound_paused(ch, 1) if opts[:paused]
+      WC.sound_seek(ch, opts[:playtime].to_f) if opts[:playtime].is_a?(Numeric) && opts[:playtime] > 0
+    end
     opts
   end
 
@@ -441,12 +485,30 @@ class Audio
   def sync!
     @entries.keys.each do |k|
       e = @entries[k]
-      g = (e[:opts][:gain] || 1.0).to_f
+      o = e[:opts]
+      g = (o[:gain] || 1.0).to_f
       if g != e[:gain]
         WC.sound_gain(e[:channel], g)
         e[:gain] = g
       end
-      @entries.delete(k) unless WC.sound_playing(e[:channel])
+      p = (o[:pitch] || 1.0).to_f
+      if p != e[:pitch]
+        WC.sound_pitch(e[:channel], p)
+        e[:pitch] = p
+      end
+      paused = o[:paused] ? true : false
+      if paused != e[:paused]
+        WC.sound_paused(e[:channel], paused ? 1 : 0)
+        e[:paused] = paused
+      end
+      # playtime: game WRITES to seek; the engine refreshes it each tick
+      if o[:playtime].is_a?(Numeric) && e[:playtime] && (o[:playtime] - e[:playtime]).abs > 0.25
+        WC.sound_seek(e[:channel], o[:playtime].to_f)
+      end
+      t = WC.sound_playtime(e[:channel])
+      o[:playtime] = t if t >= 0
+      e[:playtime] = o[:playtime]
+      @entries.delete(k) if !paused && !WC.sound_playing(e[:channel])
     end
   end
 end
@@ -479,11 +541,9 @@ class Gtk
     WC.load_u32(slot.to_i)
   end
 
-  # [w, h] a label with this text/size will occupy (the built-in bitfont)
-  def calcstringbox(text, size_px = 3)
-    len = text.to_s.length
-    w = len > 0 ? (6 * len - 1) * size_px : 0
-    [w, 8 * size_px]
+  # [w, h] a label with this text/size (and optional TTF font) will occupy
+  def calcstringbox(text, size_px = 3, font = '')
+    WC.text_size(text.to_s, size_px.to_i, font.to_s)
   end
 end
 
@@ -604,19 +664,20 @@ end
 def __wc_draw_label(l)
   if l.is_a?(Array)
     WC.label(__wc_num(l[0], 0), __wc_num(l[1], 0), l[2].to_s, __wc_num(l[3], 3),
-                 __wc_num(l[4], 255), __wc_num(l[5], 255), __wc_num(l[6], 255))
+             __wc_num(l[4], 255), __wc_num(l[5], 255), __wc_num(l[6], 255), 255, '')
   else
     text = __wc_prop(l, :text, '').to_s
     scale = __wc_num(__wc_prop(l, :size_px, 3), 3)
+    font = __wc_prop(l, :font, '').to_s
     x = __wc_num(__wc_prop(l, :x, 0), 0)
     align = __wc_prop(l, :alignment_enum, 0)
     if align == 1 || align == 2
-      w = (6 * text.length - 1) * scale
+      w = WC.text_size(text, scale, font)[0]
       x = align == 1 ? x - w / 2 : x - w
     end
     WC.label(x, __wc_num(__wc_prop(l, :y, 0), 0), text, scale,
-                 __wc_num(__wc_prop(l, :r, 255), 255), __wc_num(__wc_prop(l, :g, 255), 255),
-                 __wc_num(__wc_prop(l, :b, 255), 255))
+             __wc_num(__wc_prop(l, :r, 255), 255), __wc_num(__wc_prop(l, :g, 255), 255),
+             __wc_num(__wc_prop(l, :b, 255), 255), __wc_num(__wc_prop(l, :a, 255), 255), font)
   end
 end
 
