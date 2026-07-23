@@ -86,13 +86,30 @@ static uint32_t wc_save[SAVE_SLOTS];
 
 /* ── raster helpers (bottom-left origin, like DragonRuby) ──────────── */
 
-static inline void px(int x, int y_bl, uint32_t c) {
-    if (x < 0 || x >= DEFAULT_WIDTH || y_bl < 0 || y_bl >= DEFAULT_HEIGHT) return;
-    wc_framebuffer[(DEFAULT_HEIGHT - 1 - y_bl) * DEFAULT_WIDTH + x] = c;
-}
+/* Current raster destination. NULL = the cart framebuffer (XRGB u32).
+ * Non-NULL = a render target's RGBA8 buffer (row 0 = top, like a PNG, so
+ * targets can be sampled by draw_sprite unchanged). */
+static uint8_t *rt_buf = NULL;
+static int rt_w, rt_h;
+
+static inline int dest_w(void) { return rt_buf ? rt_w : DEFAULT_WIDTH; }
+static inline int dest_h(void) { return rt_buf ? rt_h : DEFAULT_HEIGHT; }
 
 static inline void blend_px(int x, int y_bl, uint32_t rgb, int a) {
-    if (a <= 0 || x < 0 || x >= DEFAULT_WIDTH || y_bl < 0 || y_bl >= DEFAULT_HEIGHT) return;
+    if (a <= 0 || x < 0 || x >= dest_w() || y_bl < 0 || y_bl >= dest_h()) return;
+    if (rt_buf) {
+        uint8_t *p = &rt_buf[((rt_h - 1 - y_bl) * rt_w + x) * 4];
+        uint32_t sr = (rgb >> 16) & 0xFF, sg = (rgb >> 8) & 0xFF, sb = rgb & 0xFF;
+        uint32_t da = p[3];
+        /* source-over composite, alpha accumulates */
+        uint32_t oa = a + da * (255 - a) / 255;
+        if (oa == 0) return;
+        p[0] = (uint8_t)((sr * a + p[0] * da * (255 - a) / 255) / oa);
+        p[1] = (uint8_t)((sg * a + p[1] * da * (255 - a) / 255) / oa);
+        p[2] = (uint8_t)((sb * a + p[2] * da * (255 - a) / 255) / oa);
+        p[3] = (uint8_t)oa;
+        return;
+    }
     uint32_t *p = &wc_framebuffer[(DEFAULT_HEIGHT - 1 - y_bl) * DEFAULT_WIDTH + x];
     if (a >= 255) { *p = rgb; return; }
     uint32_t d = *p;
@@ -102,12 +119,16 @@ static inline void blend_px(int x, int y_bl, uint32_t rgb, int a) {
     *p = (r << 16) | (g << 8) | b;
 }
 
+static inline void px(int x, int y_bl, uint32_t c) {
+    blend_px(x, y_bl, c, 255);
+}
+
 static void fill_rect(int x, int y, int w, int h, uint32_t c, int a) {
     if (a <= 0) return;
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
-    int x1 = x + w > DEFAULT_WIDTH ? DEFAULT_WIDTH : x + w;
-    int y1 = y + h > DEFAULT_HEIGHT ? DEFAULT_HEIGHT : y + h;
-    if (a >= 255) {
+    int x1 = x + w > dest_w() ? dest_w() : x + w;
+    int y1 = y + h > dest_h() ? dest_h() : y + h;
+    if (a >= 255 && !rt_buf) {
         for (int yy = y0; yy < y1; yy++) {
             uint32_t *row = &wc_framebuffer[(DEFAULT_HEIGHT - 1 - yy) * DEFAULT_WIDTH];
             for (int xx = x0; xx < x1; xx++) row[xx] = c;
@@ -473,6 +494,50 @@ static mrb_value wy_load_u32(mrb_state *m, mrb_value self) {
     return mrb_int_value(m, (slot >= 0 && slot < SAVE_SLOTS) ? (mrb_int)wc_save[slot] : 0);
 }
 
+/* render target: find-or-create an "@rt:name" sprite entry backed by an RGBA
+ * buffer and aim the rasterizer at it (empty name = back to the framebuffer).
+ * Cleared to transparent on begin — a target re-renders when shoveled and
+ * keeps its last pixels when not. */
+static mrb_value wy_set_target(mrb_state *m, mrb_value self) {
+    const char *name; mrb_int nlen, w, h;
+    mrb_get_args(m, "sii", &name, &nlen, &w, &h);
+    if (nlen == 0) { rt_buf = NULL; return mrb_nil_value(); }
+    char key[160];
+    snprintf(key, sizeof key, "@rt:%.*s", (int)(nlen < 150 ? nlen : 150), name);
+    if (w < 1) w = DEFAULT_WIDTH;
+    if (h < 1) h = DEFAULT_HEIGHT;
+    if (w > 2048) w = 2048;
+    if (h > 2048) h = 2048;
+    sprite_t *s = NULL;
+    for (int i = 0; i < MAX_SPRITES; i++)
+        if (sprites[i].active && strcmp(sprites[i].path, key) == 0) { s = &sprites[i]; break; }
+    if (s && (s->w != (int)w || s->h != (int)h)) { free(s->rgba); s->rgba = NULL; s->w = (int)w; s->h = (int)h; }
+    if (!s) {
+        for (int i = 0; i < MAX_SPRITES; i++) if (!sprites[i].active) { s = &sprites[i]; break; }
+        if (!s) return mrb_nil_value();
+        snprintf(s->path, sizeof s->path, "%s", key);
+        s->w = (int)w; s->h = (int)h; s->rgba = NULL; s->active = 1;
+    }
+    if (!s->rgba) s->rgba = malloc((size_t)s->w * s->h * 4);
+    if (!s->rgba) { s->active = 0; return mrb_nil_value(); }
+    memset(s->rgba, 0, (size_t)s->w * s->h * 4);
+    rt_buf = s->rgba; rt_w = s->w; rt_h = s->h;
+    return mrb_nil_value();
+}
+
+static mrb_value wy_sound_gain(mrb_state *m, mrb_value self) {
+    mrb_int channel; mrb_float gain;
+    mrb_get_args(m, "if", &channel, &gain);
+    wc_mixer_set_volume((int)channel, (float)gain);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_sound_playing(mrb_state *m, mrb_value self) {
+    mrb_int channel;
+    mrb_get_args(m, "i", &channel);
+    return mrb_bool_value(wc_mixer_is_playing((int)channel));
+}
+
 /* load another .rb asset (the prelude's `require` — multi-file games) */
 static mrb_value wy_load_script(mrb_state *m, mrb_value self) {
     const char *path; mrb_int plen;
@@ -546,22 +611,25 @@ WC_EXPORT_INIT void wc_init(void) {
     mrb = mrb_open();
     if (!mrb) { WC_LOG("wyvern: mrb_open failed"); dbg_ruby_ok = 0; return; }
 
-    struct RClass *wy = mrb_define_module(mrb, "Wyvern");
-    mrb_define_module_function(mrb, wy, "clear_bg",   wy_clear,      MRB_ARGS_REQ(3));
-    mrb_define_module_function(mrb, wy, "solid",      wy_solid,      MRB_ARGS_REQ(8));
-    mrb_define_module_function(mrb, wy, "border",     wy_border,     MRB_ARGS_REQ(8));
-    mrb_define_module_function(mrb, wy, "line",       wy_line,       MRB_ARGS_REQ(8));
-    mrb_define_module_function(mrb, wy, "sprite",     wy_sprite,     MRB_ARGS_REQ(17));
-    mrb_define_module_function(mrb, wy, "label",      wy_label,      MRB_ARGS_REQ(7));
-    mrb_define_module_function(mrb, wy, "log",        wy_log,        MRB_ARGS_REQ(1));
-    mrb_define_module_function(mrb, wy, "mark",       wy_mark,       MRB_ARGS_REQ(1));
-    mrb_define_module_function(mrb, wy, "beep",       wy_beep,       MRB_ARGS_REQ(2));
-    mrb_define_module_function(mrb, wy, "sound",      wy_sound,      MRB_ARGS_REQ(3));
-    mrb_define_module_function(mrb, wy, "sound_stop", wy_sound_stop, MRB_ARGS_REQ(1));
-    mrb_define_module_function(mrb, wy, "debug_set",  wy_debug_set,  MRB_ARGS_REQ(2));
-    mrb_define_module_function(mrb, wy, "save_u32",   wy_save_u32,   MRB_ARGS_REQ(2));
-    mrb_define_module_function(mrb, wy, "load_script", wy_load_script, MRB_ARGS_REQ(1));
-    mrb_define_module_function(mrb, wy, "load_u32",   wy_load_u32,   MRB_ARGS_REQ(1));
+    struct RClass *wc = mrb_define_module(mrb, "WC");
+    mrb_define_module_function(mrb, wc, "clear_bg",   wy_clear,      MRB_ARGS_REQ(3));
+    mrb_define_module_function(mrb, wc, "solid",      wy_solid,      MRB_ARGS_REQ(8));
+    mrb_define_module_function(mrb, wc, "border",     wy_border,     MRB_ARGS_REQ(8));
+    mrb_define_module_function(mrb, wc, "line",       wy_line,       MRB_ARGS_REQ(8));
+    mrb_define_module_function(mrb, wc, "sprite",     wy_sprite,     MRB_ARGS_REQ(17));
+    mrb_define_module_function(mrb, wc, "label",      wy_label,      MRB_ARGS_REQ(7));
+    mrb_define_module_function(mrb, wc, "log",        wy_log,        MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "mark",       wy_mark,       MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "beep",       wy_beep,       MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "sound",      wy_sound,      MRB_ARGS_REQ(3));
+    mrb_define_module_function(mrb, wc, "sound_stop", wy_sound_stop, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "debug_set",  wy_debug_set,  MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "save_u32",   wy_save_u32,   MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "load_script", wy_load_script, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "set_target",  wy_set_target,  MRB_ARGS_REQ(3));
+    mrb_define_module_function(mrb, wc, "sound_gain",  wy_sound_gain,  MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "sound_playing", wy_sound_playing, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "load_u32",   wy_load_u32,   MRB_ARGS_REQ(1));
 
     if (wc_host_info.flags & WC_HOST_FLAG_DETERMINISTIC) {
         mrb_funcall(mrb, mrb_top_self(mrb), "srand", 1, mrb_int_value(mrb, (mrb_int)wc_rng_state));
@@ -590,8 +658,9 @@ WC_EXPORT_RENDER void wc_render(void) {
             mrb_int_value(mrb, (mrb_int)p->right_x),
             mrb_int_value(mrb, (mrb_int)p->right_y),
         };
-        mrb_funcall_argv(mrb, mrb_top_self(mrb), mrb_intern_lit(mrb, "__wyvern_frame"), 5, argv);
+        mrb_funcall_argv(mrb, mrb_top_self(mrb), mrb_intern_lit(mrb, "__wasmcart_frame"), 5, argv);
         ruby_guard("tick");
+        rt_buf = NULL; /* never leave a frame aimed at a render target */
     }
     if (!dbg_ruby_ok) {
         fill_rect(0, DEFAULT_HEIGHT - 80, DEFAULT_WIDTH, 80, 0x00AA2222, 255);

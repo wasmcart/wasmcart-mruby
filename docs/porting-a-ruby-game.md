@@ -35,7 +35,7 @@ change:
 | `require 'app/foo.rb'` | Works - files load from cart assets (no Regexp class in the build, plain paths only) |
 | TTF fonts, `size_enum` | Built-in 5x7 bitfont; use `size_px` (pixel scale) and `alignment_enum` 0/1/2 |
 | Mouse / full keyboard | Gamepad only - see above |
-| `args.audio` looping music | `args.outputs.sounds << { path:, gain:, looping: true }` |
+| `args.audio[:music] = {...}` | Works: persistent channels, gain, looping, delete-to-stop |
 | `$gtk.write_file` / reading files | Cart SRAM: `args.gtk.save_u32 slot, v` / `load_u32 slot` (64 slots, persisted by hosts as `<cart>.sav`, savestate-safe in RetroArch) |
 | Render targets, easing, `args.outputs.static_*` | Not implemented - restructure or draw per tick |
 | `Regexp`, `File`, `Dir`, threads | Not in the sandbox - carts are pure compute over the ABI |

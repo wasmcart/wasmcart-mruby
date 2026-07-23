@@ -60,8 +60,16 @@ bottom-left-origin canvas.
 | `args.outputs.sprites` | `{x:, y:, w:, h:, path: 'sprites/foo.png', source_x/y/w/h:, flip_horizontally:, flip_vertically:, angle:, r:, g:, b:, a:}` - PNG, spritesheet tiles, rotation, tint |
 | `args.outputs.labels` | `{x:, y:, text:, size_px:, alignment_enum:, r:, g:, b:}` - built-in font, upper + lower case |
 | `args.outputs.lines` / `borders` | `[x, y, x2, y2, r, g, b, a]` / rect forms |
+| `args.outputs.primitives` / `debug` | ANY primitive type, drawn in shovel order (the z-ordering tool; `debug` renders topmost). Types inferred or set via `primitive_marker` |
+| `args.outputs.static_*` | persist across ticks (shovel once) for every collection |
+| `args.outputs[:name]` | **render target**: shovel into it, then draw it as a sprite with `path: :name` (rotate/scale/tint it like any sprite) |
 | `args.outputs.sounds` | `'sounds/jump.wav'` (16 mixer voices), `{path:, gain:, looping:}`, or `{freq:, frames:}` beeps |
+| `args.audio[:music] = { input:, gain:, looping: }` | persistent audio channels; mutate `gain`, `delete` to stop |
 | `args.outputs.background_color` | `[r, g, b]` |
+
+Primitives can also be **objects**: `class Foo; attr_sprite; end` (or
+`attr_rect` / `attr_label` / `attr_line`) and shovel instances directly, the
+DragonRuby OO idiom.
 
 **Inputs** (gamepad-first - wasmcart is a cartridge console, controllers are
 the primary input):
@@ -75,8 +83,12 @@ the primary input):
 
 - `args.state.anything = value` - open-struct persistence between ticks
   (`args.state.score ||= 0`); `args.state.new_entity(:player, x: 0)`
-- `args.geometry.intersect_rect? a, b` / `inside_rect?` / `distance` / `center`
-- `args.tick_count`, `args.grid`
+- `args.geometry`: `intersect_rect?`, `inside_rect?`, `point_inside_rect?`,
+  `distance`, `angle_to`/`angle_from`, `center`, `scale_rect` (arrays, hashes,
+  or attr_rect objects)
+- `args.easing.ease start, now, duration, :quad, :flip, ...` for animation
+- `Numeric#to_radians` / `to_degrees` / `sign`
+- `args.tick_count` (also `Kernel#tick_count` and `args.state.tick_count`), `args.grid`
 - `puts` - captured by the host's debug event trace
 - `args.gtk.save_u32 slot, v` / `load_u32 slot` - **cart SRAM** (64 slots,
   persisted as `<cart>.sav` by the player; how the flappy example keeps its
