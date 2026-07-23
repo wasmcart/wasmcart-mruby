@@ -1,4 +1,4 @@
-# wasmcart-mruby
+# wasmcart-dragonruby
 
 **Write games in Ruby. Ship them as wasmcart carts.**
 
@@ -23,8 +23,8 @@ end
 ## Quick start
 
 ```bash
-git clone https://github.com/wasmcart/wasmcart-mruby
-cp -r wasmcart-mruby/template my-game
+git clone https://github.com/wasmcart/wasmcart-dragonruby
+cp -r wasmcart-dragonruby/template my-game
 cd my-game && ./run.sh          # opens a window; edit app/main.rb, rerun
 ```
 
@@ -129,4 +129,6 @@ is mandatory — mruby's exception handling breaks bizarrely without it.
 
 MIT. mruby (MIT) is fetched at engine-build time; stb_image (public domain /
 MIT) is vendored. DragonRuby is a trademark of its owners; this project is
-unaffiliated.
+an unaffiliated, independent runtime that contains none of DragonRuby's code
+and does not claim compatibility — the name signals which API *style* the
+Ruby surface follows.

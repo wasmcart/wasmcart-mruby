@@ -47,8 +47,8 @@ definitions (`def x = y`) and bare `module_function`; use classic `def` and
 ## Build the cart
 
 ```bash
-git clone https://github.com/wasmcart/wasmcart-mruby
-cp -r wasmcart-mruby/template my-game
+git clone https://github.com/wasmcart/wasmcart-dragonruby
+cp -r wasmcart-dragonruby/template my-game
 cd my-game
 rm app/main.rb && cp -r /path/to/your/game/app/* app/   # your Ruby + assets
 ./run.sh                                                # window opens; iterate
