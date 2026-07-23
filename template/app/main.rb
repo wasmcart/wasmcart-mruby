@@ -1,4 +1,4 @@
-# your game starts here — pure Ruby, DragonRuby-style.
+# your game starts here - pure Ruby, DragonRuby-style.
 # run it:  ./run.sh   (or: npx wasmcart .)
 def tick args
   args.state.x ||= 600

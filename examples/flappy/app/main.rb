@@ -1,4 +1,4 @@
-# FLAPPY WYVERN — a DragonRuby-style game on the full wyvern surface:
+# FLAPPY WYVERN - a DragonRuby-style game on the full wyvern surface:
 # spritesheet animation with rotation, WAV sound effects, geometry helpers,
 # centered mixed-case labels, deterministic rand. Pure DragonRuby idiom:
 # def tick args, args.state, args.inputs, shovel into args.outputs.
