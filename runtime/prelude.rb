@@ -725,18 +725,33 @@ def __wc_draw_prim(p)
   end
 end
 
+# kinds for WC.draw_list, the C whole-list renderer (see runtime.c):
+# 0 solid, 1 border, 2 line, 3 label, 4 sprite
+def __wc_flush_solids(list, retained = false)
+  return if list.empty?
+  if retained && list.all? { |s| s.is_a?(Array) }
+    WC.static_solid_batch(list)
+  else
+    WC.draw_list(list, 0)
+  end
+end
+
+def __wc_flush_sprites(list)
+  WC.draw_list(list, 4) unless list.empty?
+end
+
 def __wc_flush_target(t)
   if t.background_color
     bg = t.background_color
     WC.solid(0, 0, t.w > 0 ? t.w : 1280, t.h > 0 ? t.h : 720,
                  __wc_num(bg[0], 0), __wc_num(bg[1], 0), __wc_num(bg[2], 0), 255)
   end
-  t.solids.each { |s| __wc_draw_solid(s) }
-  t.sprites.each { |s| __wc_draw_sprite(s) }
+  __wc_flush_solids(t.solids)
+  __wc_flush_sprites(t.sprites)
   t.primitives.each { |p| __wc_draw_prim(p) }
-  t.labels.each { |l| __wc_draw_label(l) }
-  t.lines.each { |l| __wc_draw_line(l) }
-  t.borders.each { |b| __wc_draw_border(b) }
+  WC.draw_list(t.labels, 3)
+  WC.draw_list(t.lines, 2)
+  WC.draw_list(t.borders, 1)
 end
 
 def __wc_flush(outputs)
@@ -751,18 +766,18 @@ def __wc_flush(outputs)
   bg = outputs.background_color || [0, 0, 0]
   WC.clear_bg(__wc_num(bg[0], 0), __wc_num(bg[1], 0), __wc_num(bg[2], 0))
 
-  outputs.static_solids.each { |s| __wc_draw_solid(s) }
-  outputs.solids.each { |s| __wc_draw_solid(s) }
-  outputs.static_sprites.each { |s| __wc_draw_sprite(s) }
-  outputs.sprites.each { |s| __wc_draw_sprite(s) }
+  __wc_flush_solids(outputs.static_solids, true)
+  __wc_flush_solids(outputs.solids)
+  __wc_flush_sprites(outputs.static_sprites)
+  __wc_flush_sprites(outputs.sprites)
   outputs.static_primitives.each { |p| __wc_draw_prim(p) }
   outputs.primitives.each { |p| __wc_draw_prim(p) }
-  outputs.static_labels.each { |l| __wc_draw_label(l) }
-  outputs.labels.each { |l| __wc_draw_label(l) }
-  outputs.static_lines.each { |l| __wc_draw_line(l) }
-  outputs.lines.each { |l| __wc_draw_line(l) }
-  outputs.static_borders.each { |b| __wc_draw_border(b) }
-  outputs.borders.each { |b| __wc_draw_border(b) }
+  WC.draw_list(outputs.static_labels, 3)
+  WC.draw_list(outputs.labels, 3)
+  WC.draw_list(outputs.static_lines, 2)
+  WC.draw_list(outputs.lines, 2)
+  WC.draw_list(outputs.static_borders, 1)
+  WC.draw_list(outputs.borders, 1)
   outputs.debug.each { |p| __wc_draw_prim(p) }
 
   outputs.sounds.each do |snd|

@@ -55,7 +55,7 @@ excludes.
 `args.inputs.controllers`), `Numeric#frame_index` / `elapsed_time`,
 `args.gtk.calcstringbox` (TTF-aware), `line_intersect?` /
 `find_intersect_rect` / `find_all_intersect_rect`, `cubic_bezier` / `bezier`
-/ `ray_test` / `rotate_point`, full `Regexp` (onigmo), `JSON.parse` /
+/ `ray_test` / `rotate_point`, full `Regexp` (source-built Onigmo), `JSON.parse` /
 `#to_json`, **OGG audio assets**, and `args.audio` channel `pitch:`,
 `paused:`, and `playtime:` (read = position, write = seek).
 

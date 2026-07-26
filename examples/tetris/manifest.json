@@ -1,0 +1,7 @@
+{
+  "name": "neon-tetris",
+  "version": "0.1.0",
+  "abi": 3,
+  "entry": "main.wasm",
+  "assets": "app"
+}

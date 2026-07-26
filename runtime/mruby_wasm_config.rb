@@ -33,7 +33,8 @@ MRuby::CrossBuild.new('emscripten') do |conf|
   conf.gem core: 'mruby-kernel-ext'
   conf.gem core: 'mruby-metaprog'
   conf.gem core: 'mruby-error'
-  # porting-gap closers: Regexp + JSON (fetched from GitHub at build time)
+  # Regexp is statically compiled from the bundled Onigmo source by mruby's
+  # gem build. build.sh supplies wasm-safe flags for its generated Makefile.
   conf.gem github: 'mattn/mruby-onig-regexp'
   conf.gem github: 'mattn/mruby-json'
 end

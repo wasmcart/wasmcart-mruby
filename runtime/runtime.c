@@ -20,8 +20,12 @@
  * NOT DragonRuby: the official engine is proprietary; this is an
  * independent, tiny look-alike surface on the open wasmcart contract.
  */
+#ifdef WC_ENABLE_GL2D
+#define WC_USE_GL
+#endif
 #include "wasmcart.h"
 #include "wc_cart.h"
+#include "render2d_gl.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -47,6 +51,7 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 #include <mruby/array.h>
+#include <mruby/hash.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -73,11 +78,30 @@ static int32_t  dbg_score;
 static int32_t  dbg_aux;
 static uint32_t dbg_ruby_ok = 1;
 
+/* GL renderer per-frame diagnostics (all zero in the CPU build) */
+wy_r2d_stats_t wy_r2d_stats;
+
+/* frame-time probe: wc_time.delta_ms accumulated in µs. Real wall-clock when
+ * the cart is loaded WITHOUT a deterministic seed; a harness diffs sum/frames
+ * across a bulk step to get the true per-frame cart cost, free of the host's
+ * once-per-call GL readback. */
+static uint32_t dbg_dt_last_us;
+static uint32_t dbg_dt_sum_us;
+static uint32_t dbg_dt_frames;
+
 WC_DEBUG_FIELDS(
     WC_DBG("tick_count", dbg_tick,    WC_DBG_U32),
     WC_DBG("score",      dbg_score,   WC_DBG_I32),
     WC_DBG("aux",        dbg_aux,     WC_DBG_I32),
-    WC_DBG("ruby_ok",    dbg_ruby_ok, WC_DBG_U32)
+    WC_DBG("ruby_ok",    dbg_ruby_ok, WC_DBG_U32),
+    WC_DBG("dt_last_us",  dbg_dt_last_us,  WC_DBG_U32),
+    WC_DBG("dt_sum_us",   dbg_dt_sum_us,   WC_DBG_U32),
+    WC_DBG("dt_frames",   dbg_dt_frames,   WC_DBG_U32),
+    WC_DBG("gl_draws",        wy_r2d_stats.draws,         WC_DBG_U32),
+    WC_DBG("gl_solid_flushes", wy_r2d_stats.solid_flushes, WC_DBG_U32),
+    WC_DBG("gl_tex_flushes",  wy_r2d_stats.tex_flushes,   WC_DBG_U32),
+    WC_DBG("gl_quads",        wy_r2d_stats.quads,         WC_DBG_U32),
+    WC_DBG("gl_upload_bytes", wy_r2d_stats.upload_bytes,  WC_DBG_U32)
 )
 
 #define MARK_BOOT 1
@@ -134,6 +158,7 @@ static inline void px(int x, int y_bl, uint32_t c) {
 
 static void fill_rect(int x, int y, int w, int h, uint32_t c, int a) {
     if (a <= 0) return;
+    if (wy_r2d_solid(x, y, w, h, c, a)) return;
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
     int x1 = x + w > dest_w() ? dest_w() : x + w;
     int y1 = y + h > dest_h() ? dest_h() : y + h;
@@ -156,6 +181,7 @@ static void border_rect(int x, int y, int w, int h, uint32_t c, int a) {
 }
 
 static void raster_line(int x0, int y0, int x1, int y1, uint32_t c, int a) {
+    if (wy_r2d_line(x0, y0, x1, y1, c, a)) return;
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
@@ -221,6 +247,9 @@ static void draw_sprite(sprite_t *s, int dx, int dy, int dw, int dh,
     if (!s || dw <= 0 || dh <= 0) return;
     if (sw <= 0) { sx = 0; sw = s->w; }
     if (sh <= 0) { sy = 0; sh = s->h; }
+    if (wy_r2d_sprite(s->rgba, s->w, s->h, dx, dy, dw, dh, sx, sy, sw, sh,
+                      flip_h, flip_v, angle_deg,
+                      (((uint32_t)tr & 255) << 16) | (((uint32_t)tg & 255) << 8) | ((uint32_t)tb & 255), ta)) return;
 
     double rad = angle_deg * (3.14159265358979323846 / 180.0);
     double cs = cos(rad), sn = sin(rad);
@@ -312,17 +341,27 @@ static int glyph_index(char ch) {
     return 36;
 }
 
-static void draw_label(int x, int y_top, const char *s, int scale, uint32_t c) {
+static void draw_label_a(int x, int y_top, const char *s, int scale, uint32_t c, int a) {
     if (scale < 1) scale = 1;
     int cx = x;
     for (; *s; s++) {
         const uint8_t *g = FONT[glyph_index(*s)];
-        for (int row = 0; row < 7; row++)
-            for (int col = 0; col < 5; col++)
-                if (g[row] & (0x10 >> col))
-                    fill_rect(cx + col * scale, y_top - (row + 1) * scale, scale, scale, c, 255);
+        for (int row = 0; row < 7; row++) {
+            int col = 0;
+            while (col < 5) {
+                if (!(g[row] & (0x10 >> col))) { col++; continue; }
+                int start = col++;
+                while (col < 5 && (g[row] & (0x10 >> col))) col++;
+                fill_rect(cx + start * scale, y_top - (row + 1) * scale,
+                          (col - start) * scale, scale, c, a);
+            }
+        }
         cx += 6 * scale;
     }
+}
+
+static void draw_label(int x, int y_top, const char *s, int scale, uint32_t c) {
+    draw_label_a(x, y_top, s, scale, c, 255);
 }
 
 /* ── TTF fonts: baked-atlas cache per (path, pixel height) ──────────── */
@@ -517,6 +556,97 @@ static mrb_value wy_solid(mrb_state *m, mrb_value self) {
     return mrb_nil_value();
 }
 
+static int wy_batch_int(mrb_state *m, mrb_value item, mrb_int index, int fallback) {
+    if (index >= RARRAY_LEN(item)) return fallback;
+    mrb_value value = mrb_ary_entry(item, index);
+    return mrb_nil_p(value) ? fallback : (int)mrb_as_int(m, value);
+}
+
+static mrb_value wy_solid_batch(mrb_state *m, mrb_value self) {
+    mrb_value list;
+    mrb_get_args(m, "o", &list);
+    if (!mrb_array_p(list)) return mrb_nil_value();
+
+    mrb_int count = RARRAY_LEN(list);
+    if (count <= 0 || count > 4096) return mrb_nil_value();
+#ifndef WC_ENABLE_GL2D
+    for (mrb_int i = 0; i < count; i++) {
+        mrb_value item = mrb_ary_entry(list, i);
+        if (!mrb_array_p(item) || RARRAY_LEN(item) < 4) continue;
+        fill_rect(wy_batch_int(m, item, 0, 0),
+                  wy_batch_int(m, item, 1, 0),
+                  wy_batch_int(m, item, 2, 0),
+                  wy_batch_int(m, item, 3, 0),
+                  rgb(wy_batch_int(m, item, 4, 0),
+                      wy_batch_int(m, item, 5, 0),
+                      wy_batch_int(m, item, 6, 0)),
+                  wy_batch_int(m, item, 7, 255));
+    }
+    return mrb_nil_value();
+#else
+    static int items[4096 * 6];
+    for (mrb_int i = 0; i < count; i++) {
+        mrb_value item = mrb_ary_entry(list, i);
+        int *out = &items[i * 6];
+        if (!mrb_array_p(item) || RARRAY_LEN(item) < 4) {
+            memset(out, 0, sizeof(int) * 6);
+            continue;
+        }
+        out[0] = wy_batch_int(m, item, 0, 0);
+        out[1] = wy_batch_int(m, item, 1, 0);
+        out[2] = wy_batch_int(m, item, 2, 0);
+        out[3] = wy_batch_int(m, item, 3, 0);
+        out[4] = (int)(((uint32_t)wy_batch_int(m, item, 4, 0) << 16) |
+                 ((uint32_t)wy_batch_int(m, item, 5, 0) << 8) |
+                 (uint32_t)wy_batch_int(m, item, 6, 0));
+        out[5] = wy_batch_int(m, item, 7, 255);
+    }
+    if (wy_r2d_solid_batch(items, (int)count)) return mrb_nil_value();
+    for (mrb_int i = 0; i < count; i++) {
+        int *item = &items[i * 6];
+        fill_rect(item[0], item[1], item[2], item[3], (uint32_t)item[4], item[5]);
+    }
+    return mrb_nil_value();
+#endif
+}
+
+static mrb_value wy_static_solid_batch(mrb_state *m, mrb_value self) {
+    mrb_value list;
+    mrb_get_args(m, "o", &list);
+    if (!mrb_array_p(list)) return mrb_nil_value();
+
+    mrb_int count = RARRAY_LEN(list);
+    if (count <= 0 || count > 4096) return mrb_nil_value();
+    static int items[4096 * 6];
+    uint32_t hash = 2166136261u;
+    for (mrb_int i = 0; i < count; i++) {
+        mrb_value item = mrb_ary_entry(list, i);
+        if (!mrb_array_p(item) || RARRAY_LEN(item) < 4) return mrb_nil_value();
+        int *out = &items[i * 6];
+        out[0] = wy_batch_int(m, item, 0, 0);
+        out[1] = wy_batch_int(m, item, 1, 0);
+        out[2] = wy_batch_int(m, item, 2, 0);
+        out[3] = wy_batch_int(m, item, 3, 0);
+        out[4] = (int)(((uint32_t)wy_batch_int(m, item, 4, 0) << 16) |
+                 ((uint32_t)wy_batch_int(m, item, 5, 0) << 8) |
+                 (uint32_t)wy_batch_int(m, item, 6, 0));
+        out[5] = wy_batch_int(m, item, 7, 255);
+        for (int j = 0; j < 6; j++) {
+            uint32_t value = (uint32_t)out[j];
+            hash ^= value & 255u; hash *= 16777619u;
+            hash ^= (value >> 8) & 255u; hash *= 16777619u;
+            hash ^= (value >> 16) & 255u; hash *= 16777619u;
+            hash ^= (value >> 24) & 255u; hash *= 16777619u;
+        }
+    }
+    if (wy_r2d_static_solid_batch(items, (int)count, hash)) return mrb_nil_value();
+    for (mrb_int i = 0; i < count; i++) {
+        int *item = &items[i * 6];
+        fill_rect(item[0], item[1], item[2], item[3], (uint32_t)item[4], item[5]);
+    }
+    return mrb_nil_value();
+}
+
 static mrb_value wy_border(mrb_state *m, mrb_value self) {
     mrb_int x, y, w, h, r, g, b, a;
     mrb_get_args(m, "iiiiiiii", &x, &y, &w, &h, &r, &g, &b, &a);
@@ -541,10 +671,61 @@ static mrb_value wy_sprite(mrb_state *m, mrb_value self) {
     char buf[160];
     mrb_int n = plen < 159 ? plen : 159;
     memcpy(buf, path, n); buf[n] = 0;
+    if (strncmp(buf, "@rt:", 4) == 0) wy_r2d_disable();
     sprite_t *s = sprite_get(buf);
     if (s) draw_sprite(s, (int)x, (int)y, (int)w, (int)h, (int)sx, (int)sy, (int)sw, (int)sh,
                        (int)fh, (int)fv, (double)angle, (int)tr, (int)tg, (int)tb, (int)ta);
     else fill_rect((int)x, (int)y, (int)w, (int)h, 0x00FF00FF, 255); /* missing-asset magenta */
+    return mrb_nil_value();
+}
+
+static mrb_value wy_hash_prop(mrb_state *m, mrb_value hash, mrb_sym key) {
+    return mrb_hash_get(m, hash, mrb_symbol_value(key));
+}
+
+static int wy_hash_int(mrb_state *m, mrb_value hash, mrb_sym key, int fallback) {
+    mrb_value value = wy_hash_prop(m, hash, key);
+    return mrb_nil_p(value) ? fallback : (int)mrb_as_int(m, value);
+}
+
+static mrb_float wy_hash_float(mrb_state *m, mrb_value hash, mrb_sym key, mrb_float fallback) {
+    mrb_value value = wy_hash_prop(m, hash, key);
+    return mrb_nil_p(value) ? fallback : mrb_as_float(m, value);
+}
+
+#define WY_HASH_INT(m, h, key, fallback) wy_hash_int((m), (h), mrb_intern_lit((m), key), (fallback))
+#define WY_HASH_FLOAT(m, h, key, fallback) wy_hash_float((m), (h), mrb_intern_lit((m), key), (fallback))
+
+static mrb_value wy_sprite_batch(mrb_state *m, mrb_value self) {
+    mrb_value list;
+    mrb_get_args(m, "o", &list);
+    if (!mrb_array_p(list)) return mrb_nil_value();
+
+    mrb_int count = RARRAY_LEN(list);
+    for (mrb_int i = 0; i < count; i++) {
+        mrb_value item = mrb_ary_entry(list, i);
+        if (!mrb_hash_p(item)) continue;
+        mrb_value path = wy_hash_prop(m, item, mrb_intern_lit(m, "path"));
+        if (!mrb_string_p(path)) continue;
+
+        char path_buf[160];
+        mrb_int path_len = RSTRING_LEN(path);
+        mrb_int n = path_len < 159 ? path_len : 159;
+        memcpy(path_buf, RSTRING_PTR(path), n);
+        path_buf[n] = 0;
+        sprite_t *sprite = sprite_get(path_buf);
+        if (!sprite) continue;
+        draw_sprite(sprite,
+                    WY_HASH_INT(m, item, "x", 0), WY_HASH_INT(m, item, "y", 0),
+                    WY_HASH_INT(m, item, "w", 0), WY_HASH_INT(m, item, "h", 0),
+                    WY_HASH_INT(m, item, "source_x", 0), WY_HASH_INT(m, item, "source_y", 0),
+                    WY_HASH_INT(m, item, "source_w", 0), WY_HASH_INT(m, item, "source_h", 0),
+                    WY_HASH_INT(m, item, "flip_horizontally", 0),
+                    WY_HASH_INT(m, item, "flip_vertically", 0),
+                    WY_HASH_FLOAT(m, item, "angle", 0),
+                    WY_HASH_INT(m, item, "r", 255), WY_HASH_INT(m, item, "g", 255),
+                    WY_HASH_INT(m, item, "b", 255), WY_HASH_INT(m, item, "a", 255));
+    }
     return mrb_nil_value();
 }
 
@@ -562,22 +743,247 @@ static mrb_value wy_label(mrb_state *m, mrb_value self) {
         mrb_int fn = flen < 159 ? flen : 159;
         memcpy(fbuf, font, fn); fbuf[fn] = 0;
         font_t *f = font_get(fbuf, (int)scale * 8); /* size_px parity with the bitfont */
-        if (f) { draw_label_ttf(f, (int)x, (int)y, buf, rgb(r, g, b), (int)a); return mrb_nil_value(); }
-    }
-    /* bitfont path (alpha honored) */
-    if (a >= 255) draw_label((int)x, (int)y, buf, (int)scale, rgb(r, g, b));
-    else {
-        int scale_i = (int)scale < 1 ? 1 : (int)scale;
-        int cx = (int)x;
-        for (char *p = buf; *p; p++) {
-            const uint8_t *gl = FONT[glyph_index(*p)];
-            for (int row = 0; row < 7; row++)
-                for (int col = 0; col < 5; col++)
-                    if (gl[row] & (0x10 >> col))
-                        fill_rect(cx + col * scale_i, (int)y - (row + 1) * scale_i, scale_i, scale_i, rgb(r, g, b), (int)a);
-            cx += 6 * scale_i;
+        if (f) {
+            /* The TTF path currently rasterizes into the CPU target. */
+            wy_r2d_disable();
+            draw_label_ttf(f, (int)x, (int)y, buf, rgb(r, g, b), (int)a);
+            return mrb_nil_value();
         }
     }
+    /* bitfont path (alpha honored) */
+    draw_label_a((int)x, (int)y, buf, (int)scale, rgb(r, g, b), (int)a);
+    return mrb_nil_value();
+}
+
+/* ── WC.draw_list(list, kind): whole-list renderer ───────────────────
+ * Walks an outputs list in C: array items take a positional fast path,
+ * hashes a keyed fast path, anything else falls back to the Ruby
+ * __wc_draw_* shim — one VM dispatch per LIST instead of many per ITEM.
+ * Kinds: 0 solid, 1 border, 2 line, 3 label, 4 sprite. Draw order is
+ * preserved (solid runs are flushed before a Ruby fallback executes). */
+
+#define DL_SOLID  0
+#define DL_BORDER 1
+#define DL_LINE   2
+#define DL_LABEL  3
+#define DL_SPRITE 4
+
+static mrb_sym sym_x, sym_y, sym_w, sym_h, sym_r, sym_g, sym_b, sym_a;
+static mrb_sym sym_x2, sym_y2, sym_text, sym_size_px, sym_font, sym_align;
+static mrb_sym sym_path, sym_src_x, sym_src_y, sym_src_w, sym_src_h;
+static mrb_sym sym_flip_h, sym_flip_v, sym_angle;
+
+static int val_int(mrb_state *m, mrb_value v, int fallback) {
+    if (mrb_nil_p(v)) return fallback;
+    if (mrb_integer_p(v)) return (int)mrb_integer(v);
+    if (mrb_float_p(v)) return (int)mrb_float(v);
+    return (int)mrb_as_int(m, v);
+}
+
+static double val_float(mrb_state *m, mrb_value v, double fallback) {
+    if (mrb_nil_p(v)) return fallback;
+    if (mrb_float_p(v)) return (double)mrb_float(v);
+    if (mrb_integer_p(v)) return (double)mrb_integer(v);
+    return (double)mrb_as_float(m, v);
+}
+
+static int hget_int(mrb_state *m, mrb_value hash, mrb_sym key, int fallback) {
+    return val_int(m, mrb_hash_get(m, hash, mrb_symbol_value(key)), fallback);
+}
+
+static int aget_int(mrb_state *m, mrb_value arr, mrb_int i, int fallback) {
+    if (i >= RARRAY_LEN(arr)) return fallback;
+    return val_int(m, RARRAY_PTR(arr)[i], fallback);
+}
+
+/* text/path values arrive as String, Symbol, or anything with to_s */
+static void val_cstr(mrb_state *m, mrb_value v, char *buf, size_t cap) {
+    if (mrb_symbol_p(v)) {
+        snprintf(buf, cap, "%s", mrb_sym_name(m, mrb_symbol(v)));
+        return;
+    }
+    if (!mrb_string_p(v)) v = mrb_obj_as_string(m, v);
+    mrb_int n = RSTRING_LEN(v);
+    if (n > (mrb_int)cap - 1) n = (mrb_int)cap - 1;
+    memcpy(buf, RSTRING_PTR(v), (size_t)n);
+    buf[n] = 0;
+}
+
+static void solid_items_flush(const int *items, int count) {
+    if (count <= 0) return;
+    if (wy_r2d_solid_batch(items, count)) return;
+    for (int i = 0; i < count; i++) {
+        const int *it = &items[i * 6];
+        fill_rect(it[0], it[1], it[2], it[3], (uint32_t)it[4], it[5]);
+    }
+}
+
+static void dl_label(mrb_state *m, int x, int y, mrb_value text_v, int scale,
+                     const char *font, int r, int g, int b, int a, int align) {
+    char buf[256];
+    val_cstr(m, text_v, buf, sizeof buf);
+    if (scale < 1) scale = 1;
+    font_t *f = NULL;
+    if (font && font[0]) f = font_get(font, scale * 8);
+    if (align == 1 || align == 2) {
+        int len = (int)strlen(buf);
+        int wpx = f ? measure_ttf(f, buf) : (len > 0 ? (6 * len - 1) * scale : 0);
+        x -= align == 1 ? wpx / 2 : wpx;
+    }
+    if (f) {
+        /* The TTF path rasterizes into the CPU target (parity with WC.label) */
+        wy_r2d_disable();
+        draw_label_ttf(f, x, y, buf, rgb(r, g, b), a);
+        return;
+    }
+    draw_label_a(x, y, buf, scale, rgb(r, g, b), a);
+}
+
+static void dl_sprite(mrb_state *m, mrb_value path_v, int dx, int dy, int dw, int dh,
+                      int sx, int sy, int sw, int sh, int fh, int fv, double angle,
+                      int tr, int tg, int tb, int ta) {
+    char path[160];
+    if (mrb_symbol_p(path_v)) {
+        snprintf(path, sizeof path, "@rt:%s", mrb_sym_name(m, mrb_symbol(path_v)));
+    } else {
+        val_cstr(m, path_v, path, sizeof path);
+    }
+    if (strncmp(path, "@rt:", 4) == 0) wy_r2d_disable();
+    sprite_t *s = sprite_get(path);
+    if (s) draw_sprite(s, dx, dy, dw, dh, sx, sy, sw, sh, fh, fv, angle, tr, tg, tb, ta);
+    else fill_rect(dx, dy, dw, dh, 0x00FF00FF, 255); /* missing-asset magenta */
+}
+
+static mrb_value wy_draw_list(mrb_state *m, mrb_value self) {
+    mrb_value list;
+    mrb_int kind;
+    mrb_get_args(m, "oi", &list, &kind);
+    if (!mrb_array_p(list)) return mrb_nil_value();
+
+    static int items[4096 * 6];
+    int batch = 0;
+    static const char *fallbacks[5] = {
+        "__wc_draw_solid", "__wc_draw_border", "__wc_draw_line",
+        "__wc_draw_label", "__wc_draw_sprite",
+    };
+    if (kind < 0 || kind > 4) return mrb_nil_value();
+
+    for (mrb_int i = 0; i < RARRAY_LEN(list); i++) {
+        mrb_value item = RARRAY_PTR(list)[i];
+        int is_arr = mrb_array_p(item);
+        int is_hash = !is_arr && mrb_hash_p(item);
+        if (!is_arr && !is_hash) {
+            if (batch) { solid_items_flush(items, batch); batch = 0; }
+            mrb_funcall(m, mrb_top_self(m), fallbacks[kind], 1, item);
+            if (m->exc) return mrb_nil_value();
+            continue;
+        }
+        int ai = mrb_gc_arena_save(m);
+        switch ((int)kind) {
+        case DL_SOLID: {
+            int *out = &items[batch * 6];
+            if (is_arr) {
+                if (RARRAY_LEN(item) < 4) break;
+                out[0] = aget_int(m, item, 0, 0);
+                out[1] = aget_int(m, item, 1, 0);
+                out[2] = aget_int(m, item, 2, 0);
+                out[3] = aget_int(m, item, 3, 0);
+                out[4] = (int)rgb(aget_int(m, item, 4, 0), aget_int(m, item, 5, 0),
+                                  aget_int(m, item, 6, 0));
+                out[5] = aget_int(m, item, 7, 255);
+            } else {
+                out[0] = hget_int(m, item, sym_x, 0);
+                out[1] = hget_int(m, item, sym_y, 0);
+                out[2] = hget_int(m, item, sym_w, 0);
+                out[3] = hget_int(m, item, sym_h, 0);
+                out[4] = (int)rgb(hget_int(m, item, sym_r, 0), hget_int(m, item, sym_g, 0),
+                                  hget_int(m, item, sym_b, 0));
+                out[5] = hget_int(m, item, sym_a, 255);
+            }
+            if (++batch == 4096) { solid_items_flush(items, batch); batch = 0; }
+            break;
+        }
+        case DL_BORDER: {
+            int x, y, w, h, r, g, b, a;
+            if (is_arr) {
+                x = aget_int(m, item, 0, 0); y = aget_int(m, item, 1, 0);
+                w = aget_int(m, item, 2, 0); h = aget_int(m, item, 3, 0);
+                r = aget_int(m, item, 4, 0); g = aget_int(m, item, 5, 0);
+                b = aget_int(m, item, 6, 0); a = aget_int(m, item, 7, 255);
+            } else {
+                x = hget_int(m, item, sym_x, 0); y = hget_int(m, item, sym_y, 0);
+                w = hget_int(m, item, sym_w, 0); h = hget_int(m, item, sym_h, 0);
+                r = hget_int(m, item, sym_r, 0); g = hget_int(m, item, sym_g, 0);
+                b = hget_int(m, item, sym_b, 0); a = hget_int(m, item, sym_a, 255);
+            }
+            border_rect(x, y, w, h, rgb(r, g, b), a);
+            break;
+        }
+        case DL_LINE: {
+            int x, y, x2, y2, r, g, b, a;
+            if (is_arr) {
+                x = aget_int(m, item, 0, 0); y = aget_int(m, item, 1, 0);
+                x2 = aget_int(m, item, 2, 0); y2 = aget_int(m, item, 3, 0);
+                r = aget_int(m, item, 4, 0); g = aget_int(m, item, 5, 0);
+                b = aget_int(m, item, 6, 0); a = aget_int(m, item, 7, 255);
+            } else {
+                x = hget_int(m, item, sym_x, 0); y = hget_int(m, item, sym_y, 0);
+                x2 = hget_int(m, item, sym_x2, 0); y2 = hget_int(m, item, sym_y2, 0);
+                r = hget_int(m, item, sym_r, 0); g = hget_int(m, item, sym_g, 0);
+                b = hget_int(m, item, sym_b, 0); a = hget_int(m, item, sym_a, 255);
+            }
+            raster_line(x, y, x2, y2, rgb(r, g, b), a);
+            break;
+        }
+        case DL_LABEL: {
+            if (is_arr) {
+                if (RARRAY_LEN(item) < 3) break;
+                dl_label(m, aget_int(m, item, 0, 0), aget_int(m, item, 1, 0),
+                         RARRAY_PTR(item)[2], aget_int(m, item, 3, 3), NULL,
+                         aget_int(m, item, 4, 255), aget_int(m, item, 5, 255),
+                         aget_int(m, item, 6, 255), 255, 0);
+            } else {
+                char font[160];
+                font[0] = 0;
+                mrb_value font_v = mrb_hash_get(m, item, mrb_symbol_value(sym_font));
+                if (!mrb_nil_p(font_v)) val_cstr(m, font_v, font, sizeof font);
+                dl_label(m, hget_int(m, item, sym_x, 0), hget_int(m, item, sym_y, 0),
+                         mrb_hash_get(m, item, mrb_symbol_value(sym_text)),
+                         hget_int(m, item, sym_size_px, 3), font,
+                         hget_int(m, item, sym_r, 255), hget_int(m, item, sym_g, 255),
+                         hget_int(m, item, sym_b, 255), hget_int(m, item, sym_a, 255),
+                         hget_int(m, item, sym_align, 0));
+            }
+            break;
+        }
+        case DL_SPRITE: {
+            if (is_arr) {
+                if (RARRAY_LEN(item) < 5) break;
+                dl_sprite(m, RARRAY_PTR(item)[4],
+                          aget_int(m, item, 0, 0), aget_int(m, item, 1, 0),
+                          aget_int(m, item, 2, 0), aget_int(m, item, 3, 0),
+                          0, 0, 0, 0, 0, 0, 0.0, 255, 255, 255, 255);
+            } else {
+                mrb_value path_v = mrb_hash_get(m, item, mrb_symbol_value(sym_path));
+                if (mrb_nil_p(path_v)) break;
+                dl_sprite(m, path_v,
+                          hget_int(m, item, sym_x, 0), hget_int(m, item, sym_y, 0),
+                          hget_int(m, item, sym_w, 0), hget_int(m, item, sym_h, 0),
+                          hget_int(m, item, sym_src_x, 0), hget_int(m, item, sym_src_y, 0),
+                          hget_int(m, item, sym_src_w, 0), hget_int(m, item, sym_src_h, 0),
+                          mrb_test(mrb_hash_get(m, item, mrb_symbol_value(sym_flip_h))) ? 1 : 0,
+                          mrb_test(mrb_hash_get(m, item, mrb_symbol_value(sym_flip_v))) ? 1 : 0,
+                          val_float(m, mrb_hash_get(m, item, mrb_symbol_value(sym_angle)), 0.0),
+                          hget_int(m, item, sym_r, 255), hget_int(m, item, sym_g, 255),
+                          hget_int(m, item, sym_b, 255), hget_int(m, item, sym_a, 255));
+            }
+            break;
+        }
+        }
+        mrb_gc_arena_restore(m, ai);
+        if (m->exc) return mrb_nil_value();
+    }
+    if (batch) solid_items_flush(items, batch);
     return mrb_nil_value();
 }
 
@@ -702,6 +1108,9 @@ static mrb_value wy_set_target(mrb_state *m, mrb_value self) {
     const char *name; mrb_int nlen, w, h;
     mrb_get_args(m, "sii", &name, &nlen, &w, &h);
     if (nlen == 0) { rt_buf = NULL; return mrb_nil_value(); }
+    /* Render targets still use the CPU backing store until GPU FBO support
+     * is added. Keep the rest of this frame on the compatible backend. */
+    wy_r2d_disable();
     char key[160];
     snprintf(key, sizeof key, "@rt:%.*s", (int)(nlen < 150 ? nlen : 150), name);
     if (w < 1) w = DEFAULT_WIDTH;
@@ -756,6 +1165,26 @@ static mrb_value wy_debug_set(mrb_state *m, mrb_value self) {
     return mrb_nil_value();
 }
 
+static void wy_mix_audio(int frames) {
+    int active = 0;
+    for (int i = 0; i < WC_MIXER_MAX_CHANNELS; i++) {
+        if (wc_mixer_channels[i].active && !wc_mixer_channels[i].paused) {
+            active = 1;
+            break;
+        }
+    }
+    if (active) {
+        wc_mixer_mix_f32(wc_audio_ring, AUDIO_CAP, &wc_audio_write_cursor, frames);
+        return;
+    }
+    for (int i = 0; i < frames; i++) {
+        uint32_t index = (wc_audio_write_cursor % AUDIO_CAP) * 2;
+        wc_audio_ring[index] = 0.0f;
+        wc_audio_ring[index + 1] = 0.0f;
+        wc_audio_write_cursor++;
+    }
+}
+
 /* ── mruby boot ─────────────────────────────────────────────────────── */
 
 static char *load_asset_text(const char *name) {
@@ -801,6 +1230,9 @@ WC_EXPORT wc_info_t *wc_get_info(void) {
     wc_info.audio_sample_rate = 48000; /* the mixer's fixed output rate */
     wc_info.save_ptr  = (uint32_t)(uintptr_t)wc_save;
     wc_info.save_size = sizeof(wc_save);
+#ifdef WC_ENABLE_GL2D
+    wc_info.gpu_api = 1;
+#endif
     return &wc_info;
 }
 
@@ -808,16 +1240,47 @@ WC_EXPORT_INIT void wc_init(void) {
     WC_LOG("wyvern: mruby boot");
     wc_debug_mark(MARK_BOOT);
     wc_mixer_init();
+#ifdef WC_ENABLE_GL2D
+    if (!wy_r2d_init(DEFAULT_WIDTH, DEFAULT_HEIGHT)) WC_LOG("wyvern: GL 2D init failed");
+#endif
     mrb = mrb_open();
     if (!mrb) { WC_LOG("wyvern: mrb_open failed"); dbg_ruby_ok = 0; return; }
+
+    /* interned once; hash lookups in the draw_list hot path reuse these */
+    sym_x = mrb_intern_lit(mrb, "x");
+    sym_y = mrb_intern_lit(mrb, "y");
+    sym_w = mrb_intern_lit(mrb, "w");
+    sym_h = mrb_intern_lit(mrb, "h");
+    sym_r = mrb_intern_lit(mrb, "r");
+    sym_g = mrb_intern_lit(mrb, "g");
+    sym_b = mrb_intern_lit(mrb, "b");
+    sym_a = mrb_intern_lit(mrb, "a");
+    sym_x2 = mrb_intern_lit(mrb, "x2");
+    sym_y2 = mrb_intern_lit(mrb, "y2");
+    sym_text = mrb_intern_lit(mrb, "text");
+    sym_size_px = mrb_intern_lit(mrb, "size_px");
+    sym_font = mrb_intern_lit(mrb, "font");
+    sym_align = mrb_intern_lit(mrb, "alignment_enum");
+    sym_path = mrb_intern_lit(mrb, "path");
+    sym_src_x = mrb_intern_lit(mrb, "source_x");
+    sym_src_y = mrb_intern_lit(mrb, "source_y");
+    sym_src_w = mrb_intern_lit(mrb, "source_w");
+    sym_src_h = mrb_intern_lit(mrb, "source_h");
+    sym_flip_h = mrb_intern_lit(mrb, "flip_horizontally");
+    sym_flip_v = mrb_intern_lit(mrb, "flip_vertically");
+    sym_angle = mrb_intern_lit(mrb, "angle");
 
     struct RClass *wc = mrb_define_module(mrb, "WC");
     mrb_define_module_function(mrb, wc, "clear_bg",   wy_clear,      MRB_ARGS_REQ(3));
     mrb_define_module_function(mrb, wc, "solid",      wy_solid,      MRB_ARGS_REQ(8));
+    mrb_define_module_function(mrb, wc, "solid_batch", wy_solid_batch, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "static_solid_batch", wy_static_solid_batch, MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "border",     wy_border,     MRB_ARGS_REQ(8));
     mrb_define_module_function(mrb, wc, "line",       wy_line,       MRB_ARGS_REQ(8));
     mrb_define_module_function(mrb, wc, "sprite",     wy_sprite,     MRB_ARGS_REQ(17));
+    mrb_define_module_function(mrb, wc, "sprite_batch", wy_sprite_batch, MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "label",      wy_label,      MRB_ARGS_REQ(9));
+    mrb_define_module_function(mrb, wc, "draw_list",  wy_draw_list,  MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, wc, "text_size",  wy_text_size,  MRB_ARGS_REQ(3));
     mrb_define_module_function(mrb, wc, "sound_pitch",  wy_sound_pitch,  MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, wc, "sound_paused", wy_sound_paused, MRB_ARGS_REQ(2));
@@ -852,7 +1315,18 @@ WC_EXPORT_INIT void wc_init(void) {
 }
 
 WC_EXPORT_RENDER void wc_render(void) {
+    /* frame-to-frame delta; skip boot/pause outliers so the average is honest */
+    if (wc_time.delta_ms > 0 && wc_time.delta_ms < 100.0) {
+        dbg_dt_last_us = (uint32_t)(wc_time.delta_ms * 1000.0);
+        dbg_dt_sum_us += dbg_dt_last_us;
+        dbg_dt_frames++;
+    }
+#ifndef WC_ENABLE_GL2D
     for (int i = 0; i < DEFAULT_WIDTH * DEFAULT_HEIGHT; i++) wc_framebuffer[i] = bg_color;
+#endif
+#ifdef WC_ENABLE_GL2D
+    wy_r2d_begin(bg_color);
+#endif
 
     if (mrb && dbg_ruby_ok) {
         /* all four pads: buttons + both sticks each (controller_one..four) */
@@ -870,6 +1344,7 @@ WC_EXPORT_RENDER void wc_render(void) {
         rt_buf = NULL; /* never leave a frame aimed at a render target */
     }
     if (!dbg_ruby_ok) {
+        wy_r2d_disable();
         fill_rect(0, DEFAULT_HEIGHT - 80, DEFAULT_WIDTH, 80, 0x00AA2222, 255);
         draw_label(24, DEFAULT_HEIGHT - 28, "RUBY EXCEPTION - SEE LOG", 4, 0x00FFFFFF);
     }
@@ -879,7 +1354,11 @@ WC_EXPORT_RENDER void wc_render(void) {
     double delta = wc_time.delta_ms;
     if (delta <= 0 || delta > 100) delta = 1000.0 / 60.0;
     int frames = (int)(48000.0 * delta / 1000.0);
-    wc_mixer_mix_f32(wc_audio_ring, AUDIO_CAP, &wc_audio_write_cursor, frames);
+    wy_mix_audio(frames);
+
+#ifdef WC_ENABLE_GL2D
+    wy_r2d_end();
+#endif
 
     tick_n++;
     dbg_tick = tick_n;

@@ -6,3 +6,5 @@ runtime/prelude.inc
 *.sav
 template/main.wasm
 examples/*/main.wasm
+bench/prof/
+build/*.png
