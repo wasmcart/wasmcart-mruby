@@ -104,6 +104,13 @@ npx wasmcart pack --wasm main.wasm --assets app --name my-game -o my-game.wasc
 `my-game.wasc` is the single shippable file. Same artifact everywhere; no
 per-platform builds.
 
+The runtime's default build (`./runtime/build.sh`, target `gl2d`) renders
+through WebGL2 — 2-14× faster per frame than software rasterization, with
+identical pixels. Carts that use CPU-only features (render targets, TTF
+fonts) automatically render CPU-side and blit to GL. The `cpu` target
+(`./runtime/build.sh cpu`) exists for benchmarking the software rasterizer
+against it.
+
 ## Run it on your devices
 
 - **RetroArch anywhere (SteamOS, Bazzite, desktop):** install the
