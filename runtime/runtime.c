@@ -1321,12 +1321,11 @@ WC_EXPORT_RENDER void wc_render(void) {
         dbg_dt_sum_us += dbg_dt_last_us;
         dbg_dt_frames++;
     }
-#ifndef WC_ENABLE_GL2D
-    for (int i = 0; i < DEFAULT_WIDTH * DEFAULT_HEIGHT; i++) wc_framebuffer[i] = bg_color;
-#endif
-#ifdef WC_ENABLE_GL2D
-    wy_r2d_begin(bg_color);
-#endif
+    /* GL frame when begin() returns 1; otherwise (CPU build, or the GL
+     * build's sticky cpu_mode) clear + CPU-rasterize the framebuffer */
+    if (!wy_r2d_begin(bg_color)) {
+        for (int i = 0; i < DEFAULT_WIDTH * DEFAULT_HEIGHT; i++) wc_framebuffer[i] = bg_color;
+    }
 
     if (mrb && dbg_ruby_ok) {
         /* all four pads: buttons + both sticks each (controller_one..four) */
@@ -1356,9 +1355,7 @@ WC_EXPORT_RENDER void wc_render(void) {
     int frames = (int)(48000.0 * delta / 1000.0);
     wy_mix_audio(frames);
 
-#ifdef WC_ENABLE_GL2D
-    wy_r2d_end();
-#endif
+    wy_r2d_end(wc_framebuffer);
 
     tick_n++;
     dbg_tick = tick_n;

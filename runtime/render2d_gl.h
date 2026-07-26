@@ -18,8 +18,11 @@ extern wy_r2d_stats_t wy_r2d_stats;
 #ifdef WC_ENABLE_GL2D
 
 int  wy_r2d_init(int width, int height);
-void wy_r2d_begin(uint32_t clear_color);
-void wy_r2d_end(void);
+/* returns 1 when this frame renders via GL; 0 when the caller must clear
+ * and CPU-rasterize the framebuffer (sticky cpu_mode, see render2d_gl.c) */
+int  wy_r2d_begin(uint32_t clear_color);
+/* fb: the cart framebuffer — blitted to GL when the frame was CPU-rendered */
+void wy_r2d_end(const uint32_t *fb);
 void wy_r2d_disable(void);
 int  wy_r2d_active(void);
 int  wy_r2d_solid(int x, int y, int w, int h, uint32_t color, int alpha);
@@ -37,8 +40,8 @@ int  wy_r2d_sprite(const void *pixels, int sw, int sh,
 static inline int wy_r2d_init(int width, int height) {
     (void)width; (void)height; return 0;
 }
-static inline void wy_r2d_begin(uint32_t clear_color) { (void)clear_color; }
-static inline void wy_r2d_end(void) {}
+static inline int wy_r2d_begin(uint32_t clear_color) { (void)clear_color; return 0; }
+static inline void wy_r2d_end(const uint32_t *fb) { (void)fb; }
 static inline void wy_r2d_disable(void) {}
 static inline int wy_r2d_active(void) { return 0; }
 static inline int wy_r2d_solid(int x, int y, int w, int h, uint32_t color, int alpha) {

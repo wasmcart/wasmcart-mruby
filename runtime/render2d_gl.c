@@ -4,6 +4,8 @@
 
 #define WC_USE_GL
 #include "wasmcart.h"
+#define WC_GL_BLIT_IMPLEMENTATION
+#include "wc_gl_blit.h"
 #include <math.h>
 #include <string.h>
 
@@ -44,6 +46,13 @@ typedef struct {
 
 static int ready;
 static int frame_disabled;
+/* Sticky: set on the first wy_r2d_disable (render target, TTF label,
+ * @rt: sprite, exception banner). From then on every frame CPU-rasterizes
+ * into the cart framebuffer and wy_r2d_end blits it to GL as a fullscreen
+ * quad — GL hosts would otherwise present only the clear color, losing all
+ * CPU-drawn content. Carts that never touch those features keep the GL
+ * fast path; mixed carts get CPU-build behavior at CPU-build speed. */
+static int cpu_mode;
 static int width, height;
 static float ndc_scale_x, ndc_scale_y;
 static GLuint program, vao, buffer;
@@ -256,6 +265,7 @@ int wy_r2d_init(int w, int h) {
     ready = program != 0 && vao != 0 && buffer != 0 && static_buffer != 0 &&
             index_buffer != 0 && atlas_texture != 0;
     frame_disabled = 0;
+    cpu_mode = 0;
     atlas_x = 0;
     atlas_y = 0;
     atlas_row_h = 0;
@@ -271,14 +281,19 @@ int wy_r2d_init(int w, int h) {
     return ready;
 }
 
-void wy_r2d_begin(uint32_t clear_color) {
-    if (!ready) return;
-    frame_disabled = 0;
+int wy_r2d_begin(uint32_t clear_color) {
+    if (!ready) return 0;
     solid_batch_count = 0;
     textured_batch_count = 0;
     textured_batch_texture = 0;
     solid_batch_has_alpha = 0;
     memset(&frame_stats, 0, sizeof(frame_stats));
+    if (cpu_mode) {
+        /* caller clears + CPU-rasterizes the framebuffer; end() blits it */
+        frame_disabled = 1;
+        return 0;
+    }
+    frame_disabled = 0;
     if (clear_color != current_clear_color) {
         glClearColor((float)((clear_color >> 16) & 255) / 255.0f,
                      (float)((clear_color >> 8) & 255) / 255.0f,
@@ -286,11 +301,23 @@ void wy_r2d_begin(uint32_t clear_color) {
         current_clear_color = clear_color;
     }
     glClear(GL_COLOR_BUFFER_BIT);
+    return 1;
 }
 
-void wy_r2d_end(void) {
+/* XRGB u32 framebuffer → RGBA bytes for the blit texture */
+static uint32_t blit_rgba[1280 * 720];
+
+void wy_r2d_end(const uint32_t *fb) {
     if (wy_r2d_active()) {
         flush_batches();
+    } else if (ready && frame_disabled && fb) {
+        int n = width * height;
+        for (int i = 0; i < n; i++) {
+            uint32_t px = fb[i];
+            blit_rgba[i] = 0xFF000000u | ((px >> 16) & 0xFFu) |
+                           (px & 0x0000FF00u) | ((px & 0xFFu) << 16);
+        }
+        wc_gl_blit(blit_rgba, width, height);
     }
     wy_r2d_stats = frame_stats;
 }
@@ -298,6 +325,7 @@ void wy_r2d_end(void) {
 void wy_r2d_disable(void) {
     if (wy_r2d_active()) flush_batches();
     frame_disabled = 1;
+    cpu_mode = 1;
 }
 int wy_r2d_active(void) { return ready && !frame_disabled; }
 
