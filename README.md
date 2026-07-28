@@ -26,6 +26,16 @@ end
 
 ## Quick start
 
+**Just want to play something?** Prebuilt carts are attached to the
+[latest release](https://github.com/wasmcart/wasmcart-mruby/releases/latest) —
+Flappy Wyvern, Neon Tetris, and the API showcase. Download one and run it:
+
+```bash
+npx wasmcart flappy-wyvern.wasc
+```
+
+To write your own:
+
 ```bash
 git clone https://github.com/wasmcart/wasmcart-mruby
 cp -r wasmcart-mruby/template my-game
