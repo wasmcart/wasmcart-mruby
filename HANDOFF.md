@@ -69,8 +69,10 @@ renderer was never slower. Rules of thumb:
 ## Build & test
 
 ```sh
-cd /Users/monteslu/code/ruby/wasmcart-mruby
-export WASMCART_REPO=/Users/monteslu/code/cliemu/wasmcart   # old ../../wasmcart checkout is GONE
+cd <your>/wasmcart-mruby
+# build.sh defaults WASMCART_REPO to the sibling ../../wasmcart checkout.
+# Only set it if yours lives somewhere else:
+#   export WASMCART_REPO=/path/to/wasmcart
 ./runtime/build.sh          # default = gl2d → build/main.wasm + flappy-wyvern.wasc
 ./runtime/build.sh cpu      # benchmark comparator → build/main-cpu.wasm
 

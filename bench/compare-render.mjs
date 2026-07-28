@@ -3,7 +3,26 @@
 // points, and pixel-diff them (RGB, small tolerance for GL float rounding).
 //
 // Usage: node bench/compare-render.mjs <gl.wasc> <cpu.wasc> [pressStartAt]
-import { CartHost, BUTTON } from '/Users/monteslu/code/cliemu/wasmcart/index.js';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Resolve the wasmcart checkout the same way runtime/build.sh does:
+// WASMCART_REPO if set, else the sibling checkout. Absolute paths to one
+// developer's home directory do not survive a second machine.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const WASMCART_REPO = resolve(process.env.WASMCART_REPO || join(HERE, '..', '..', 'wasmcart'));
+if (!existsSync(join(WASMCART_REPO, 'index.js'))) {
+  console.error(`wasmcart checkout not found at ${WASMCART_REPO}`);
+  console.error('set WASMCART_REPO=/path/to/wasmcart');
+  process.exit(2);
+}
+const { CartHost, BUTTON } = await import(join(WASMCART_REPO, 'index.js'));
+
+// webgl-node lives in the wasmcart checkout's node_modules; allow an override
+// for a checkout that installs it elsewhere.
+const WEBGL_NODE = process.env.WEBGL_NODE
+  || join(WASMCART_REPO, 'node_modules', 'webgl-node', 'index.mjs');
 import { writeFileSync } from 'node:fs';
 
 const glPath = process.argv[2], cpuPath = process.argv[3];
@@ -13,7 +32,7 @@ const W = 1280, H = 720;
 
 let gl = null;
 async function glFactory() {
-  const wn = await import('/Users/monteslu/code/cliemu/wasmcart/node_modules/webgl-node/index.mjs');
+  const wn = await import(WEBGL_NODE);
   gl = wn.createWebGL2Context(W, H).gl;
   return gl;
 }
@@ -98,15 +117,19 @@ for (const target of CHECK_FRAMES) {
   if (d.pct > worst.pct) worst = { ...d, frame: target, a, b };
 }
 
-// dump the worst frame pair + heatmap for inspection
+// dump the worst frame pair + heatmap for inspection. Anchor to the script's
+// own directory: a cwd-relative path only works when run from the repo root,
+// and the directory may not exist in a fresh checkout.
+const PROF_DIR = join(HERE, 'prof');
+mkdirSync(PROF_DIR, { recursive: true });
 const base = process.argv[2].replace(/.*\//, '').replace('.wasc', '');
-writePpm(`bench/prof/${base}-gl-f${worst.frame}.ppm`, worst.a);
-writePpm(`bench/prof/${base}-cpu-f${worst.frame}.ppm`, worst.b);
+writePpm(join(PROF_DIR, `${base}-gl-f${worst.frame}.ppm`), worst.a);
+writePpm(join(PROF_DIR, `${base}-cpu-f${worst.frame}.ppm`), worst.b);
 const heatRgb = new Uint8Array(W * H * 3);
 for (let p = 0; p < W * H; p++) {
   const v = worst.heat[p] > 8 ? 255 : worst.heat[p] * 8;
   heatRgb[p * 3] = v; heatRgb[p * 3 + 1] = worst.heat[p] > 8 ? 0 : v; heatRgb[p * 3 + 2] = worst.heat[p] > 8 ? 0 : v;
 }
-writePpm(`bench/prof/${base}-diff-f${worst.frame}.ppm`, heatRgb);
-console.log(`worst frame ${worst.frame} dumped to bench/prof/${base}-{gl,cpu,diff}-f${worst.frame}.ppm`);
+writePpm(join(PROF_DIR, `${base}-diff-f${worst.frame}.ppm`), heatRgb);
+console.log(`worst frame ${worst.frame} dumped to ${PROF_DIR}/${base}-{gl,cpu,diff}-f${worst.frame}.ppm`);
 process.exit(0);
