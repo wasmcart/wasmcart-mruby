@@ -96,5 +96,6 @@ PACK_NAME="flappy-wyvern"
 PACK_OUTPUT="../build/${PACK_NAME}.wasc"
 node "$WASMCART_REPO/bin/wasmcart-pack.js" \
   --wasm "$OUTPUT" --assets ../examples/flappy/app \
-  --name "$PACK_NAME" -o "$PACK_OUTPUT" > /dev/null
+  --name "$PACK_NAME" --width 1280 --height 720 \
+  -o "$PACK_OUTPUT" > /dev/null
 echo "packed $PACK_OUTPUT (npx wasmcart $PACK_OUTPUT to play)"

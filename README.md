@@ -39,7 +39,8 @@ and plays the directory as a dev-mode cart via
 a shippable single file:
 
 ```bash
-npx wasmcart pack --wasm cart.wasm --assets app --name my-game -o my-game.wasc
+npx wasmcart pack --wasm cart.wasm --assets app --name my-game \
+  --width 1280 --height 720 -o my-game.wasc
 ```
 
 ## The API (DragonRuby-style)
