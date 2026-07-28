@@ -431,6 +431,11 @@ static font_t *font_get(const char *path, int px) {
 /* y_top = top of the text box (like the bitfont); baseline sits px*0.8 below */
 static void draw_label_ttf(font_t *f, int x, int y_top, const char *s,
                            uint32_t c, int a) {
+    /* GL path: stb_truetype already baked every glyph into f->atlas, so the
+     * font uploads once as a coverage texture and each glyph is a quad in the
+     * shared batch. Only the screen target is handled here; a render target
+     * falls through to the CPU rasterizer below. */
+    const int gl_text = (!rt_buf && wy_r2d_active());
     float pen_x = (float)x;
     float baseline = (float)y_top - f->px * 0.8f;
     for (; *s; s++) {
@@ -441,11 +446,28 @@ static void draw_label_ttf(font_t *f, int x, int y_top, const char *s,
         int gx = (int)(pen_x + b->xoff);
         /* yoff is from baseline to glyph top in screen-down coords */
         int gy_top = (int)(baseline - b->yoff); /* bottom-left coords: up is + */
-        for (int row = 0; row < gh; row++) {
-            for (int col = 0; col < gw; col++) {
-                int cov = f->atlas[(b->y0 + row) * f->aw + (b->x0 + col)];
-                if (!cov) continue;
-                blend_px(gx + col, gy_top - row, c, cov * a / 255);
+        if (gl_text) {
+            /* A space has no glyph box, which is not a failure -- skip it and
+             * keep the pen advance. Treating a zero-sized glyph as an error
+             * drops every string containing a space onto the CPU backend,
+             * which is most of them.
+             *
+             * The quad is placed top-down (gy_top - gh .. gy_top) because
+             * this engine's y axis points up while the glyph rows run down. */
+            if (gw > 0 && gh > 0 &&
+                !wy_r2d_glyph(f->atlas, f->aw, f->ah,
+                              gx, gy_top - gh + 1, gw, gh,
+                              b->x0, b->y0, gw, gh, c, a)) {
+                wy_r2d_disable();   /* out of glyph textures */
+                return;
+            }
+        } else {
+            for (int row = 0; row < gh; row++) {
+                for (int col = 0; col < gw; col++) {
+                    int cov = f->atlas[(b->y0 + row) * f->aw + (b->x0 + col)];
+                    if (!cov) continue;
+                    blend_px(gx + col, gy_top - row, c, cov * a / 255);
+                }
             }
         }
         pen_x += b->xadvance;
@@ -671,7 +693,7 @@ static mrb_value wy_sprite(mrb_state *m, mrb_value self) {
     char buf[160];
     mrb_int n = plen < 159 ? plen : 159;
     memcpy(buf, path, n); buf[n] = 0;
-    if (strncmp(buf, "@rt:", 4) == 0) wy_r2d_disable();
+
     sprite_t *s = sprite_get(buf);
     if (s) draw_sprite(s, (int)x, (int)y, (int)w, (int)h, (int)sx, (int)sy, (int)sw, (int)sh,
                        (int)fh, (int)fv, (double)angle, (int)tr, (int)tg, (int)tb, (int)ta);
@@ -744,8 +766,6 @@ static mrb_value wy_label(mrb_state *m, mrb_value self) {
         memcpy(fbuf, font, fn); fbuf[fn] = 0;
         font_t *f = font_get(fbuf, (int)scale * 8); /* size_px parity with the bitfont */
         if (f) {
-            /* The TTF path currently rasterizes into the CPU target. */
-            wy_r2d_disable();
             draw_label_ttf(f, (int)x, (int)y, buf, rgb(r, g, b), (int)a);
             return mrb_nil_value();
         }
@@ -831,8 +851,6 @@ static void dl_label(mrb_state *m, int x, int y, mrb_value text_v, int scale,
         x -= align == 1 ? wpx / 2 : wpx;
     }
     if (f) {
-        /* The TTF path rasterizes into the CPU target (parity with WC.label) */
-        wy_r2d_disable();
         draw_label_ttf(f, x, y, buf, rgb(r, g, b), a);
         return;
     }
@@ -848,7 +866,7 @@ static void dl_sprite(mrb_state *m, mrb_value path_v, int dx, int dy, int dw, in
     } else {
         val_cstr(m, path_v, path, sizeof path);
     }
-    if (strncmp(path, "@rt:", 4) == 0) wy_r2d_disable();
+
     sprite_t *s = sprite_get(path);
     if (s) draw_sprite(s, dx, dy, dw, dh, sx, sy, sw, sh, fh, fv, angle, tr, tg, tb, ta);
     else fill_rect(dx, dy, dw, dh, 0x00FF00FF, 255); /* missing-asset magenta */
@@ -1107,10 +1125,11 @@ static mrb_value wy_load_u32(mrb_state *m, mrb_value self) {
 static mrb_value wy_set_target(mrb_state *m, mrb_value self) {
     const char *name; mrb_int nlen, w, h;
     mrb_get_args(m, "sii", &name, &nlen, &w, &h);
-    if (nlen == 0) { rt_buf = NULL; return mrb_nil_value(); }
-    /* Render targets still use the CPU backing store until GPU FBO support
-     * is added. Keep the rest of this frame on the compatible backend. */
-    wy_r2d_disable();
+    if (nlen == 0) {
+        rt_buf = NULL;
+        wy_r2d_target(NULL, 0, 0);        /* back to the screen */
+        return mrb_nil_value();
+    }
     char key[160];
     snprintf(key, sizeof key, "@rt:%.*s", (int)(nlen < 150 ? nlen : 150), name);
     if (w < 1) w = DEFAULT_WIDTH;
@@ -1120,7 +1139,10 @@ static mrb_value wy_set_target(mrb_state *m, mrb_value self) {
     sprite_t *s = NULL;
     for (int i = 0; i < MAX_SPRITES; i++)
         if (sprites[i].active && strcmp(sprites[i].path, key) == 0) { s = &sprites[i]; break; }
-    if (s && (s->w != (int)w || s->h != (int)h)) { free(s->rgba); s->rgba = NULL; s->w = (int)w; s->h = (int)h; }
+    if (s && (s->w != (int)w || s->h != (int)h)) {
+        wy_r2d_forget(s->rgba);
+        free(s->rgba); s->rgba = NULL; s->w = (int)w; s->h = (int)h;
+    }
     if (!s) {
         for (int i = 0; i < MAX_SPRITES; i++) if (!sprites[i].active) { s = &sprites[i]; break; }
         if (!s) return mrb_nil_value();
@@ -1131,6 +1153,11 @@ static mrb_value wy_set_target(mrb_state *m, mrb_value self) {
     if (!s->rgba) { s->active = 0; return mrb_nil_value(); }
     memset(s->rgba, 0, (size_t)s->w * s->h * 4);
     rt_buf = s->rgba; rt_w = s->w; rt_h = s->h;
+    /* An FBO keyed on the same pointer sprites use, so drawing this target
+     * later samples the texture just rendered into. If the backend cannot
+     * provide one, drop to the CPU path for the rest of the run rather than
+     * let GL and CPU each hold half the target. */
+    if (!wy_r2d_target(s->rgba, s->w, s->h)) wy_r2d_disable();
     return mrb_nil_value();
 }
 

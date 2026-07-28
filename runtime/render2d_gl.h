@@ -29,6 +29,25 @@ int  wy_r2d_solid(int x, int y, int w, int h, uint32_t color, int alpha);
 int  wy_r2d_solid_batch(const int *items, int count);
 int  wy_r2d_static_solid_batch(const int *items, int count, uint32_t hash);
 int  wy_r2d_line(int x0, int y0, int x1, int y1, uint32_t color, int alpha);
+/* Render targets. A target is both a destination and, later, a source, so it
+ * lives in its own texture with an FBO attached rather than in the shared
+ * atlas. `key` is the target's pixel-buffer pointer, the same identity
+ * wy_r2d_sprite uses, so drawing it afterwards finds this texture.
+ * wy_r2d_target(NULL, 0, 0) restores the screen; returns 0 if the target
+ * could not be set up, in which case the caller must use the CPU path. */
+int  wy_r2d_target(const void *key, int w, int h);
+/* Clear the current target (screen or render target) to an RGBA colour. */
+void wy_r2d_clear(uint32_t color, int alpha);
+/* Forget a target's GPU texture, e.g. when its slot is reused. */
+void wy_r2d_forget(const void *key);
+/* Draw one baked TTF glyph. `atlas` is stb_truetype's 8-bit coverage bitmap
+ * and doubles as the cache key, so a font uploads once and every glyph after
+ * that is a quad in the same batch. */
+int  wy_r2d_glyph(const unsigned char *atlas, int aw, int ah,
+                  int dx, int dy, int dw, int dh,
+                  int sx, int sy, int srcw, int srch,
+                  uint32_t color, int alpha);
+
 int  wy_r2d_sprite(const void *pixels, int sw, int sh,
                    int dx, int dy, int dw, int dh,
                    int sx, int sy, int srcw, int srch,
@@ -56,6 +75,19 @@ static inline int wy_r2d_static_solid_batch(const int *items, int count, uint32_
 static inline int wy_r2d_line(int x0, int y0, int x1, int y1, uint32_t color, int alpha) {
     (void)x0; (void)y0; (void)x1; (void)y1; (void)color; (void)alpha; return 0;
 }
+static inline int wy_r2d_target(const void *key, int w, int h) {
+    (void)key; (void)w; (void)h; return 0;
+}
+static inline void wy_r2d_clear(uint32_t color, int alpha) { (void)color; (void)alpha; }
+static inline void wy_r2d_forget(const void *key) { (void)key; }
+static inline int wy_r2d_glyph(const unsigned char *atlas, int aw, int ah,
+                               int dx, int dy, int dw, int dh,
+                               int sx, int sy, int srcw, int srch,
+                               uint32_t color, int alpha) {
+    (void)atlas; (void)aw; (void)ah; (void)dx; (void)dy; (void)dw; (void)dh;
+    (void)sx; (void)sy; (void)srcw; (void)srch; (void)color; (void)alpha; return 0;
+}
+
 static inline int wy_r2d_sprite(const void *pixels, int sw, int sh,
                                 int dx, int dy, int dw, int dh,
                                 int sx, int sy, int srcw, int srch,

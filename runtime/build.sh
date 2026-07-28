@@ -61,13 +61,22 @@ RUBY
 fi
 
 # mruby-onig-regexp's archive extraction is unreliable with wasm objects on
-# macOS. Link the source-built Onigmo object files directly into the final
-# static wasm module instead; they remain fully inside the cart.
+# macOS, so the gem patch above stops it extracting and we link the
+# source-built Onigmo objects directly instead. They remain fully inside the
+# cart either way.
+#
+# On Linux `ar x` works, so the gem's own extraction succeeds and those
+# objects are ALREADY inside libmruby.a -- adding them again is a duplicate
+# symbol for every one of them (~20 link errors, and the build never
+# completes). Only pass them when the archive does not already carry them.
 ONIGMO_OBJS=()
-for obj in vendor/mruby/build/emscripten/mrbgems/mruby-onig-regexp/onigmo-6.2.0/*.o \
-           vendor/mruby/build/emscripten/mrbgems/mruby-onig-regexp/onigmo-6.2.0/enc/*.o; do
-  [ -f "$obj" ] && ONIGMO_OBJS+=("$obj")
-done
+if ! "${EMAR:-emar}" t vendor/mruby/build/emscripten/lib/libmruby.a 2>/dev/null \
+     | grep -q '^regcomp\.o$'; then
+  for obj in vendor/mruby/build/emscripten/mrbgems/mruby-onig-regexp/onigmo-6.2.0/*.o \
+             vendor/mruby/build/emscripten/mrbgems/mruby-onig-regexp/onigmo-6.2.0/enc/*.o; do
+    [ -f "$obj" ] && ONIGMO_OBJS+=("$obj")
+  done
+fi
 
 # -sSUPPORT_LONGJMP=wasm is REQUIRED (mruby exceptions are setjmp/longjmp;
 # the default JS-trampoline form infinite-loops under import-stubbing hosts)
