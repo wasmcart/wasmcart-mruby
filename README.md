@@ -160,6 +160,23 @@ after the first run), and a [wasmcart](https://github.com/wasmcart/wasmcart)
 checkout for the SDK headers ([`include/`](https://github.com/wasmcart/wasmcart/tree/main/include)). Notable: `-sSUPPORT_LONGJMP=wasm`
 is mandatory - mruby's exception handling breaks bizarrely without it.
 
+## The wasmcart org
+
+This is one language runtime among several. Every repo below produces or runs
+the *same* `.wasc` carts, so a host that plays one plays them all. Full list:
+**[github.com/orgs/wasmcart/repositories](https://github.com/orgs/wasmcart/repositories)**
+
+| Repo | What it is |
+|------|------------|
+| [**wasmcart**](https://github.com/wasmcart/wasmcart) | the spec, the JS reference hosts (`CartHost`, `CartHostWeb`), and the `wasmcart` CLI + packer |
+| [**wasmcart-mruby**](https://github.com/wasmcart/wasmcart-mruby) (this repo) | write games in Ruby (mruby runtime, DragonRuby-style API) |
+| [**wasmcart-lua**](https://github.com/wasmcart/wasmcart-lua) | write games in Lua (Lua 5.4, LÖVE-style API, batched GL2D renderer) |
+| [**wasmcart-pygame**](https://github.com/wasmcart/wasmcart-pygame) | write games in Python (CPython 3.13 + pygame-ce) |
+| [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript (QuickJS, Canvas 2D + WebGL2 + Web Audio) |
+| [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2) | SDL2 backend + porting guide, for bringing existing C/SDL games over |
+| [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
+| [**wasmcart-native**](https://github.com/wasmcart/wasmcart-native) | native player built on libnode, no Node install needed |
+
 ## License
 
 MIT, every layer: engine C, Ruby surface, cart format, hosts. [mruby](https://github.com/mruby/mruby)
