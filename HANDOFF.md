@@ -10,7 +10,7 @@ Isolated per-frame cost (real WebGL2, `bench/bench-cart.mjs`, 2000-frame avg):
 
 | Cart | GL2D | GL2D + glFinish | CPU build |
 |---|---|---|---|
-| Tetris | 0.57 ms | 0.90 ms | 1.36 ms |
+| Blocks | 0.57 ms | 0.90 ms | 1.36 ms |
 | Wyvern | 0.15 ms | 0.46 ms | 2.18 ms |
 
 Microbenches (`bench/carts/`): 1000 rects marshal+render 0.088 ms (~88 ns/rect);
@@ -19,7 +19,7 @@ Remaining game frame time is ~85% the game's own mruby tick logic
 (`mrb_vm_exec`), not the renderer.
 
 Pixel parity: lockstep seeded A/B runs (`bench/compare-render.mjs`) show
-**0.000% differing pixels** over 1100 frames on Tetris, Wyvern, and the
+**0.000% differing pixels** over 1100 frames on Blocks, Wyvern, and the
 render-target test cart (max channel delta ≤4 = GL float rounding; the
 render-target cart is bit-exact).
 
@@ -44,7 +44,7 @@ renderer was never slower. Rules of thumb:
 - GLSL ES 3.00 program, shared 2048² RGBA atlas (GL_NEAREST — matches the
   CPU rasterizer's point sampling; this is what makes sprites pixel-equal),
   indexed quad batching for solids and sprites, cached blend/texture/uniform
-  state, VAO with all immutable setup hoisted to init. Tetris renders in ONE
+  state, VAO with all immutable setup hoisted to init. Blocks renders in ONE
   draw call, Wyvern in three.
 - `WC.draw_list(list, kind)` (kinds: 0 solid, 1 border, 2 line, 3 label,
   4 sprite): walks whole outputs lists in C. Arrays take a positional fast
@@ -78,13 +78,13 @@ cd <your>/wasmcart-mruby
 
 # pack a cart
 node $WASMCART_REPO/bin/wasmcart-pack.js --wasm build/main.wasm \
-  --assets examples/tetris/app --name tetris-2dgl -o build/tetris-2dgl.wasc
+  --assets examples/blocks/app --name blocks-2dgl -o build/blocks-2dgl.wasc
 
 # perf (isolated, no romdev)
-node bench/bench-cart.mjs build/tetris-2dgl.wasc 2000
+node bench/bench-cart.mjs build/blocks-2dgl.wasc 2000
 
 # pixel parity GL vs CPU (lockstep, seeded, scripted input)
-node bench/compare-render.mjs build/tetris-2dgl.wasc build/tetris-cpu.wasc 300
+node bench/compare-render.mjs build/blocks-2dgl.wasc build/blocks-cpu.wasc 300
 
 # visual/regression check in romdev (needs romdev >= 0.106.1 for real GL;
 # confirm catalog status reports gl:"rendered")
@@ -106,6 +106,6 @@ stb_vorbis pointer-comparison tautology.
 
 ## What could still be faster (all outside the renderer)
 
-- Game-side Ruby tick logic (Tetris board loops) — app code.
+- Game-side Ruby tick logic (Blocks board loops) — app code.
 - mruby VM itself (dispatch-bound interpreter).
 - romdev playtest readback accounting — upstream host change.

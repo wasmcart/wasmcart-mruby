@@ -1,4 +1,4 @@
-# NEON TETRIS - a polished, controller-first Ruby cart.
+# NEON BLOCKS - a polished, controller-first Ruby cart.
 
 BOARD_W = 10
 BOARD_H = 20
@@ -261,7 +261,7 @@ def tick args
 
   draw_background args
   update_particles args
-  args.outputs.labels << { x: 120, y: 695, text: 'NEON TETRIS', size_px: 4,
+  args.outputs.labels << { x: 120, y: 695, text: 'NEON BLOCKS', size_px: 4,
                            r: 90, g: 235, b: 255 }
   args.outputs.labels << { x: 120, y: 655, text: 'A CLEAN BLOCK PUZZLE', size_px: 2,
                            r: 130, g: 155, b: 180 }

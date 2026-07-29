@@ -1,4 +1,4 @@
-# Microbench: 40 hash labels — the label pipeline (Tetris-style HUD text).
+# Microbench: 40 hash labels — the label pipeline (Blocks-style HUD text).
 def tick(args)
   args.outputs.background_color = [7, 10, 19]
   l = args.outputs.labels
