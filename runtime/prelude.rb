@@ -545,6 +545,28 @@ class Gtk
   def calcstringbox(text, size_px = 3, font = '')
     WC.text_size(text.to_s, size_px.to_i, font.to_s)
   end
+
+  # Gamepad rumble. low = low-frequency "strong" motor, high = high-frequency
+  # "weak" motor, both 0.0..1.0 (the host clamps). duration_ms is capped by the
+  # host at 5000. controller is 0-based, matching args.inputs.controllers[i],
+  # so controller_one is 0.
+  #
+  # The host stops the motors on its own timer, so an effect outlives neither a
+  # crash nor the cart. Sustained rumble means re-arming every tick.
+  def rumble(low, high = low, duration_ms = 200, controller = 0)
+    WC.pad_rumble(low.to_f, high.to_f, duration_ms.to_i, controller.to_i)
+  end
+
+  def rumble_stop(controller = 0)
+    WC.pad_rumble_stop(controller.to_i)
+  end
+
+  # Rumble is a per-DEVICE capability, not a per-platform one: ask rather than
+  # assume. Calls on a pad without it are silent no-ops, so this is only needed
+  # when the game wants to say so (settings screens, alternate feedback).
+  def rumble?(controller = 0)
+    WC.pad_has_rumble(controller.to_i)
+  end
 end
 
 class Args

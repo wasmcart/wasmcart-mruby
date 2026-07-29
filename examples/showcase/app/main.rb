@@ -52,7 +52,19 @@ def tick args
   args.outputs.primitives << s.bird
   args.outputs.primitives << { x: px + 110, y: 260, text: 'primitives!', size_px: 3,
                                alignment_enum: 1, r: 255, g: 255, b: 255 }
-  s.started_at = args.tick_count if t >= 1.0
+  if t >= 1.0
+    s.started_at = args.tick_count
+    # a short one-shot thump each time the sweep wraps; a no-op on a pad
+    # without motors, so it needs no guard
+    args.gtk.rumble 0.7, 0.25, 180
+    s.rumbled_at = args.tick_count
+  end
+
+  # holding A drives a sustained rumble, which means re-arming every tick
+  if args.inputs.controller_one.a
+    args.gtk.rumble 0.35, 0.9, 100
+    s.rumbled_at = args.tick_count
+  end
 
   # geometry + lines: spoke from screen center to the bird, angle in HUD
   c = [640, 360]
@@ -61,6 +73,15 @@ def tick args
   ang = args.geometry.angle_to(c, b).round
   args.outputs.labels << { x: 640, y: 380, text: "angle #{ang}", size_px: 2,
                            alignment_enum: 1, r: 120, g: 200, b: 255 }
+
+  # rumble HUD: capability is per-device, so report what this pad can do
+  s.can_rumble = args.gtk.rumble? if s.can_rumble.nil?
+  hot = s.rumbled_at && (args.tick_count - s.rumbled_at) < 12
+  args.outputs.labels << {
+    x: 640, y: 96, size_px: 2, alignment_enum: 1,
+    text: s.can_rumble ? (hot ? 'rumble: BUZZ' : 'rumble: hold A') : 'rumble: pad has none',
+    r: hot ? 255 : 150, g: hot ? 120 : 160, b: hot ? 120 : 190
+  }
 
   # debug collection: topmost, always
   args.outputs.debug << { x: 24, y: 44, text: "tick #{args.tick_count}", size_px: 2, r: 140, g: 150, b: 180 }

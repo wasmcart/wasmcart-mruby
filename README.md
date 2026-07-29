@@ -91,6 +91,7 @@ the primary input):
   `.left .right .up .down .a .b .x .y .l1 .r1 .start .select`
 - `.key_down.a` etc. - pressed-this-tick edges
 - `.left_analog_x_perc` / `.left_analog_y_perc` - analog sticks, -1..1
+- output too: `args.gtk.rumble` drives the pad's motors (see State and helpers)
 
 **State and helpers:**
 
@@ -106,6 +107,13 @@ the primary input):
 - `args.gtk.save_u32 slot, v` / `load_u32 slot` - **cart SRAM** (64 slots,
   persisted as `<cart>.sav` by the player; how the flappy example keeps its
   hiscore)
+- `args.gtk.rumble low, high, ms` / `rumble_stop` / `rumble?` - **gamepad
+  rumble**. `low` is the low-frequency "strong" motor, `high` the
+  high-frequency "weak" one, both `0.0..1.0`; `ms` is capped at 5000 by the
+  host. A 4th argument picks the controller, 0-based like
+  `args.inputs.controllers[i]`. Rumble is a per-DEVICE capability, so
+  `rumble?` asks; calls on a pad without motors are silent no-ops, and the
+  host's own timer stops them, so sustained rumble means re-arming each tick
 - `args.gtk.debug_mark id` and harness debug slots - see Observability below
 
 ## How much of DragonRuby's API?

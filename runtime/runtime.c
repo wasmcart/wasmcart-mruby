@@ -1118,6 +1118,36 @@ static mrb_value wy_load_u32(mrb_state *m, mrb_value self) {
     return mrb_int_value(m, (slot >= 0 && slot < SAVE_SLOTS) ? (mrb_int)wc_save[slot] : 0);
 }
 
+/* Rumble. pad_id is 0-based to match args.inputs.controllers[i]; out-of-range
+ * pads are dropped here so Ruby can pass a controller index unchecked. The
+ * host clamps the motor levels and caps the duration, so no shaping here. */
+#define MAX_PADS 4
+
+static mrb_value wy_pad_has_rumble(mrb_state *m, mrb_value self) {
+    mrb_int pad;
+    mrb_get_args(m, "i", &pad);
+    if (pad < 0 || pad >= MAX_PADS) return mrb_false_value();
+    return wc_pad_has_rumble((unsigned int)pad) ? mrb_true_value() : mrb_false_value();
+}
+
+static mrb_value wy_pad_rumble(mrb_state *m, mrb_value self) {
+    mrb_int pad, ms;
+    mrb_float low, high;
+    mrb_get_args(m, "ffii", &low, &high, &ms, &pad);
+    if (pad < 0 || pad >= MAX_PADS) return mrb_nil_value();
+    if (ms < 0) ms = 0;
+    wc_pad_rumble((unsigned int)pad, (float)low, (float)high, (unsigned int)ms);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_pad_rumble_stop(mrb_state *m, mrb_value self) {
+    mrb_int pad;
+    mrb_get_args(m, "i", &pad);
+    if (pad < 0 || pad >= MAX_PADS) return mrb_nil_value();
+    wc_pad_rumble_stop((unsigned int)pad);
+    return mrb_nil_value();
+}
+
 /* render target: find-or-create an "@rt:name" sprite entry backed by an RGBA
  * buffer and aim the rasterizer at it (empty name = back to the framebuffer).
  * Cleared to transparent on begin — a target re-renders when shoveled and
@@ -1325,6 +1355,9 @@ WC_EXPORT_INIT void wc_init(void) {
     mrb_define_module_function(mrb, wc, "sound_gain",  wy_sound_gain,  MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, wc, "sound_playing", wy_sound_playing, MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "load_u32",   wy_load_u32,   MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "pad_has_rumble", wy_pad_has_rumble, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "pad_rumble",     wy_pad_rumble,     MRB_ARGS_REQ(4));
+    mrb_define_module_function(mrb, wc, "pad_rumble_stop", wy_pad_rumble_stop, MRB_ARGS_REQ(1));
 
     if (wc_host_info.flags & WC_HOST_FLAG_DETERMINISTIC) {
         mrb_funcall(mrb, mrb_top_self(mrb), "srand", 1, mrb_int_value(mrb, (mrb_int)wc_rng_state));

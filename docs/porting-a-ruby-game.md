@@ -59,6 +59,16 @@ excludes.
 `#to_json`, **OGG audio assets**, and `args.audio` channel `pitch:`,
 `paused:`, and `playtime:` (read = position, write = seek).
 
+**Beyond it:** `args.gtk.rumble low, high, ms[, controller]` with
+`rumble_stop` and the `rumble?` capability query. wasmcart carts run on real
+consoles and handhelds, so the pads have motors. `low` is the low-frequency
+"strong" motor and `high` the high-frequency "weak" one, both `0.0..1.0`;
+`ms` is capped at 5000 by the host. The controller argument is 0-based, like
+`args.inputs.controllers[i]`. Capability is per-DEVICE rather than
+per-platform, hence the query, though calls on a pad without motors are
+silent no-ops. The host stops the motors on its own timer, which means an
+effect never outlives the cart and sustained rumble is re-armed each tick.
+
 **Not implemented:** `args.outputs.screenshots` (a harness screenshots from
 outside the cart), `size_enum` font sizing, `origin_center!`.
 
