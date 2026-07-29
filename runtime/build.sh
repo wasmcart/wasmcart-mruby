@@ -5,6 +5,15 @@
 set -e
 cd "$(dirname "$0")"
 WASMCART_REPO="${WASMCART_REPO:-../../wasmcart}"
+
+# runtime/wasmcart.h is a copy of the spec's header, and a quoted #include makes
+# the copy win over the -I "$WASMCART_REPO/include" below no matter what order
+# the flags are in. A stale copy would build this engine against the old ABI
+# with nothing to say so, which is worth one check before a five-minute build.
+if [ -f "$WASMCART_REPO/include/wasmcart.h" ]; then
+  WASMCART_REPO="$WASMCART_REPO" node ../tools/abi-drift.mjs || exit 1
+fi
+
 MRUBY_TAG=3.4.0
 TARGET="${1:-gl2d}"
 DEFINES=""
