@@ -513,6 +513,146 @@ class Audio
   end
 end
 
+# ── args.net: peer connections ───────────────────────────────────────
+#
+# One primitive: a connection to a peer. Open one, send bytes, receive bytes,
+# learn when it opens or closes. What the connection actually IS underneath -
+# a WebSocket, a data channel, a LAN socket, a cable - is the host's business
+# and the game cannot tell.
+#
+# Networking lives in its own object rather than as args.gtk.net_* because it
+# is stateful the way args.outputs and args.audio are, not a one-shot host
+# call the way rumble is: it owns a peer table and it has to be drained once
+# per tick. args.gtk keeps thin net_* aliases for the calls a game might reach
+# for from a place that only has gtk in hand.
+#
+# BINARY ONLY. Payloads are Ruby Strings of raw bytes, embedded NULs and all;
+# if a game wants text it does its own framing (pack/unpack, JSON, whatever).
+#
+# Messages are delivered as callbacks at the TOP of the tick that follows their
+# arrival, in arrival order, so a networked game stays replayable rather than
+# depending on when the host happened to pump its socket. A game receives them
+# by defining any of these at top level:
+#
+#   def net_connected args, peer, name; end
+#   def net_message args, peer, data; end
+#   def net_disconnected args, peer; end
+#   def net_error args, peer; end
+#
+# `peer` is the handle: a small integer, stable for the session, and the ONLY
+# thing to key a player table on. `name` is DISPLAY-ONLY. It comes from a
+# remote machine, so it is attacker-controlled text: it is already bounded to
+# 64 bytes by the engine, it may not be valid UTF-8, it is not unique, it is
+# not stable across sessions, and it must never be used as a hash key.
+class Net
+  EV_CONNECT    = 0
+  EV_MESSAGE    = 1
+  EV_DISCONNECT = 2
+  EV_ERROR      = 3
+
+  STATES = [:connecting, :open, :closing, :closed].freeze
+
+  # Transport property bits (wc_peer_transport). A host that does not
+  # characterize its transport reports none of them, so treat an empty list as
+  # "assume nothing" rather than as "unreliable".
+  RELIABLE    = 0x01
+  ORDERED     = 0x02
+  LOW_LATENCY = 0x04
+
+  # Dial out. Address grammar is the HOST's: "wss://host/room" on a host that
+  # speaks WebSocket, but a room code or a serial device on one that does not.
+  # Returns a peer id, or nil if the host refused - which includes the cart's
+  # manifest not granting reach to that address. Opening is asynchronous: the
+  # peer is :connecting until net_connected fires.
+  def open(address)
+    id = WC.net_open(address.to_s)
+    id < 0 ? nil : id
+  end
+
+  # Send bytes to one peer. Returns the number of bytes accepted, or nil if the
+  # peer is gone or not open yet.
+  def send(peer, data)
+    n = WC.net_send(peer.to_i, data.to_s)
+    n < 0 ? nil : n
+  end
+
+  # Send bytes to every open peer. Returns how many peers took it, or nil if
+  # none did.
+  def broadcast(data)
+    n = WC.net_broadcast(data.to_s)
+    n < 0 ? nil : n
+  end
+
+  def close(peer)
+    WC.net_close(peer.to_i)
+    nil
+  end
+
+  # :connecting / :open / :closing / :closed. An unknown peer is :closed.
+  def state(peer)
+    STATES[WC.net_state(peer.to_i)] || :closed
+  end
+
+  def open?(peer)
+    state(peer) == :open
+  end
+
+  # Every peer id the host currently holds, including ones the host registered
+  # itself rather than ones this cart dialed.
+  def peers
+    out = []
+    WC.net_count.times do |i|
+      id = WC.net_id_at(i)
+      out << id if id >= 0
+    end
+    out
+  end
+
+  def count
+    WC.net_count
+  end
+
+  # Display-only, see the class comment. nil when the host has no name for it.
+  def name(peer)
+    WC.net_name(peer.to_i)
+  end
+
+  # Transport properties as a list of symbols, e.g. [:reliable, :ordered].
+  # Empty means the host declines to characterize it.
+  def transport(peer)
+    bits = WC.net_transport(peer.to_i)
+    out = []
+    out << :reliable    if (bits & RELIABLE) != 0
+    out << :ordered     if (bits & ORDERED) != 0
+    out << :low_latency if (bits & LOW_LATENCY) != 0
+    out
+  end
+
+  # [events_dropped, payloads_truncated] since boot. Both stay at 0 unless a
+  # peer sends faster than a tick can drain (more than 64 events between two
+  # ticks) or bigger than one event carries (4096 bytes).
+  def overflow
+    WC.net_overflow
+  end
+
+  # Drained by the engine at the top of every tick. The four callbacks are
+  # optional, so each is dispatched through the top-level object only when the
+  # game actually defined it - a game that ignores networking pays nothing and
+  # raises nothing.
+  def pump!(args)
+    while (ev = WC.net_poll)
+      kind, peer, payload, _full = ev
+      case kind
+      when EV_MESSAGE    then __wc_net_dispatch(:net_message, args, peer, payload)
+      when EV_CONNECT    then __wc_net_dispatch(:net_connected, args, peer, payload)
+      when EV_DISCONNECT then __wc_net_dispatch(:net_disconnected, args, peer)
+      when EV_ERROR      then __wc_net_dispatch(:net_error, args, peer)
+      end
+    end
+    nil
+  end
+end
+
 # ── gtk namespace ────────────────────────────────────────────────────
 
 class Gtk
@@ -567,10 +707,19 @@ class Gtk
   def rumble?(controller = 0)
     WC.pad_has_rumble(controller.to_i)
   end
+
+  # Peer networking is args.net; these forward for code holding only gtk.
+  def net_open(address)    ; $args.net.open(address)    ; end
+  def net_send(peer, data) ; $args.net.send(peer, data) ; end
+  def net_broadcast(data)  ; $args.net.broadcast(data)  ; end
+  def net_close(peer)      ; $args.net.close(peer)      ; end
+  def net_state(peer)      ; $args.net.state(peer)      ; end
+  def net_peers            ; $args.net.peers            ; end
+  def net_name(peer)       ; $args.net.name(peer)       ; end
 end
 
 class Args
-  attr_reader :state, :outputs, :gtk, :audio
+  attr_reader :state, :outputs, :gtk, :audio, :net
   attr_accessor :inputs
 
   def initialize
@@ -578,6 +727,7 @@ class Args
     @outputs = Outputs.new
     @gtk = Gtk.new
     @audio = Audio.new
+    @net = Net.new
   end
 
   def geometry
@@ -816,6 +966,18 @@ def __wc_flush(outputs)
   end
 end
 
+# Call one of the game's optional net_* callbacks, if it defined it. They live
+# at top level next to `tick`, so they are private methods on Object; the
+# dispatch has to be bound to the top-level object explicitly rather than to
+# whatever is calling, or `send` resolves against the caller's own class.
+$__wc_top = self
+
+def __wc_net_dispatch(name, *rest)
+  top = $__wc_top
+  return nil unless top.respond_to?(name, true)
+  top.__send__(name, *rest)
+end
+
 # Called by the C engine once per frame: 4 pads x (buttons, lx, ly, rx, ry).
 def __wasmcart_frame(*v)
   args = $args
@@ -824,6 +986,10 @@ def __wasmcart_frame(*v)
   args.inputs = Wasmcart::Inputs.new(pads, $__wc_prev_pads)
   args.outputs.clear_frame!
   args.state.tick_count = $__wc_tick
+
+  # Network events land before tick, so a game sees this tick's arrivals
+  # inside the same tick that reacts to them.
+  args.net.pump!(args)
 
   tick args
 

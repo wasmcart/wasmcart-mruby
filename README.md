@@ -116,6 +116,85 @@ the primary input):
   host's own timer stops them, so sustained rumble means re-arming each tick
 - `args.gtk.debug_mark id` and harness debug slots - see Observability below
 
+## Networking (`args.net`)
+
+wasmcart has one networking primitive: a **connection to a peer**. Open one,
+send bytes, receive bytes, learn when it opens or closes. What the connection
+actually is underneath (a WebSocket, a WebRTC data channel, a LAN socket, a
+serial cable) is the host's business, and a cart cannot tell. That is what
+makes a networked cart portable.
+
+DragonRuby has no equivalent, so this part of the surface is the engine's own.
+It lives in its own `args.net` object rather than as `args.gtk.net_*` because
+it is stateful the way `args.outputs` and `args.audio` are, not a one-shot host
+call the way `rumble` is. `args.gtk` keeps thin `net_open` / `net_send` /
+`net_broadcast` / `net_close` / `net_state` / `net_peers` / `net_name` aliases
+for code that only has `gtk` in hand.
+
+```ruby
+def tick args
+  args.state.peer ||= args.net.open('wss://example.com/lobby')   # id, or nil
+  args.net.send   args.state.peer, "\x01#{args.state.x.to_i}"
+  args.net.broadcast 'ping'                                       # every open peer
+end
+
+# All four callbacks are optional; define the ones you want at top level,
+# next to tick. They fire at the TOP of the tick after the event arrived.
+def net_connected args, peer, name; args.state.players[peer] = { name: name }; end
+def net_message   args, peer, data; end
+def net_disconnected args, peer;    args.state.players.delete peer; end
+def net_error     args, peer;       end
+```
+
+| Call | Returns |
+|---|---|
+| `args.net.open address` | peer id, or `nil` if the host refused |
+| `args.net.send peer, data` | bytes accepted, or `nil` |
+| `args.net.broadcast data` | how many peers took it, or `nil` |
+| `args.net.close peer` | `nil` |
+| `args.net.state peer` | `:connecting` / `:open` / `:closing` / `:closed` |
+| `args.net.open? peer` | boolean |
+| `args.net.peers` / `count` | every peer id the host holds |
+| `args.net.name peer` | display String, or `nil` |
+| `args.net.transport peer` | `[:reliable, :ordered, :low_latency]` subset, possibly empty |
+| `args.net.overflow` | `[events_dropped, payloads_truncated]` since boot |
+
+Things worth knowing before you build on it:
+
+- **Both gates are required to dial out.** The engine always sets
+  `WC_FLAG_NET_PEER` (one wasm serves every wyvern cart, so it cannot know at
+  build time whether your Ruby wants networking), but the *manifest* must also
+  grant the address. Pack with `--ws <domain>` for each domain you dial, or
+  write `"net": { "domains": [...] }` in your own manifest. Without a grant,
+  `args.net.open` returns `nil` every time. Peers the **host** registers reach
+  the cart regardless: that is the host's own decision, not reach the cart
+  asked for.
+- **Messages are binary only.** Payloads are Ruby Strings of raw bytes,
+  embedded NULs and all. Text framing is your job (`JSON.generate`, a length
+  prefix, whatever). Nothing on the path treats a payload as text or as UTF-8.
+- **`peer` is the handle, `name` is decoration.** The id is a small integer,
+  stable for the session, and the only thing to key a player table on. The
+  name comes from a remote machine, so it is **attacker-controlled text**: the
+  engine bounds it to 64 bytes, but it is not unique, not stable across
+  sessions, not necessarily valid UTF-8, and must never be used as a hash key
+  or trusted for anything that matters. Draw it and nothing else.
+- **Addressing is the host's grammar, not the spec's.** `wss://host/room` on a
+  host that speaks WebSocket; a room code or a device path on one that does
+  not. A host that does not understand an address simply fails the open, so
+  handle `nil`.
+- **Events are queued, not reentrant.** The host delivers them outside a
+  frame; the engine buffers them and drains the queue at the top of the next
+  tick, in arrival order, so a networked game stays replayable under the
+  deterministic clock. The queue holds 64 events of up to 4096 bytes each
+  between two ticks; a peer that floods past that has its **oldest** events
+  dropped and its oversized payloads clamped, both counted in
+  `args.net.overflow`.
+- **Networking is not deterministic.** Replay and the seeded RNG cover cart
+  logic, not what arrives from the network.
+
+Verify the whole path against a real socket with
+`node bench/verify-net.mjs` (see Observability).
+
 ## How much of DragonRuby's API?
 
 The core a 2D arcade game actually touches is ~95% covered: every output
@@ -164,6 +243,21 @@ just playable by humans:
 Development harnesses (e.g. the [`romdevtools`](https://www.npmjs.com/package/romdevtools)
 MCP server) can run, watch,
 listen to, drive, and regression-test these carts headlessly.
+
+The repo's own end-to-end checks drive the engine through wasmcart's public
+`CartHost` API, no host code modified:
+
+```sh
+node bench/verify-rumble.mjs     # gamepad rumble, with a no-rumble control pass
+node bench/verify-net.mjs        # peer networking against a live WebSocket server
+```
+
+`verify-net.mjs` starts wasmcart's `test/wsserver.mjs` and runs three real
+cases through it: an `/echo` round trip with a payload containing embedded NULs
+and a `0xFF` byte, two separate carts talking through `/relay/<room>`, and a
+`/drop` endpoint that closes on the cart so the disconnect path is real. Its
+last section is a control: the same cart wasm packed with **no** manifest net
+grant, which must score differently or the test is measuring nothing.
 
 ## Rebuilding the engine (optional)
 

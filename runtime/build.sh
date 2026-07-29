@@ -82,9 +82,10 @@ fi
 # the default JS-trampoline form infinite-loops under import-stubbing hosts)
 emcc runtime.c render2d_gl.c vendor/mruby/build/emscripten/lib/libmruby.a "${ONIGMO_OBJS[@]}" \
   -O2 -I vendor/mruby/include -I "$WASMCART_REPO/include" -I . \
+  -DWC_USE_NET_PEER \
   $DEFINES \
   -s STANDALONE_WASM=1 --no-entry -sSUPPORT_LONGJMP=wasm \
-  -s EXPORTED_FUNCTIONS='["_wc_init","_wc_render","_wc_get_info","_wc_debug_state","_wc_set_seed"]' \
+  -s EXPORTED_FUNCTIONS='["_wc_init","_wc_render","_wc_get_info","_wc_debug_state","_wc_set_seed","_malloc","_free"]' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=4194304 \
   -o "$OUTPUT"

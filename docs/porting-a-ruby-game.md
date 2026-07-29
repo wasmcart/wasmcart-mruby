@@ -69,12 +69,22 @@ per-platform, hence the query, though calls on a pad without motors are
 silent no-ops. The host stops the motors on its own timer, which means an
 effect never outlives the cart and sustained rumble is re-armed each tick.
 
+Also beyond it: **`args.net`**, peer connections. One primitive, one
+`args.net.open address` returning a peer id, `send` / `broadcast` / `close` /
+`state` / `peers` / `name`, and four optional top-level callbacks
+(`net_connected`, `net_message`, `net_disconnected`, `net_error`) delivered at
+the top of the following tick. Payloads are raw byte Strings; the peer id is
+the handle and the name is display-only, attacker-controlled text. Dialing out
+also needs a manifest grant (`--ws <domain>` at pack time), not just cart code.
+See the Networking section of the README.
+
 **Not implemented:** `args.outputs.screenshots` (a harness screenshots from
 outside the cart), `size_enum` font sizing, `origin_center!`.
 
 **Never (by design, not laziness):** mouse/touch and full keyboard (gamepad
 console), and the `$gtk` desktop glue: `read_file`/`write_file` (SRAM
-instead), `http_get` (networking is wasmcart's own opt-in ABI), `openurl`,
+instead), `http_get` (networking is `args.net`, wasmcart's own opt-in peer
+ABI, and it carries bytes rather than requests), `openurl`,
 `system`, C extensions. A cart is pure compute over the ABI; that's what
 makes it safe and portable.
 

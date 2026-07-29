@@ -1148,6 +1148,173 @@ static mrb_value wy_pad_rumble_stop(mrb_state *m, mrb_value self) {
     return mrb_nil_value();
 }
 
+/* ── peer networking (wc_peer_*) ─────────────────────────────────────
+ *
+ * The host calls the four wc_peer_on_* exports from OUTSIDE a frame (right
+ * before wc_render), so they must not re-enter mruby: a callback landing in
+ * the middle of a GC or of the previous tick's VM state is a crash waiting to
+ * happen, and event ordering would depend on host scheduling rather than on
+ * tick order. Instead each callback copies its payload into a fixed ring here,
+ * and the Ruby frame drains the ring at the top of the tick. Events therefore
+ * arrive inside a tick, in arrival order, which is also what makes a networked
+ * cart replayable under the deterministic clock.
+ *
+ * The ring is fixed-size and static because a cart that cannot allocate is a
+ * cart that cannot drop a frame: an overflowing ring drops the OLDEST events
+ * and counts them, which Ruby can read, rather than growing without bound
+ * under a peer that floods it. */
+
+#define NET_EVENTS      64      /* queued events between two ticks */
+#define NET_PAYLOAD_MAX 4096    /* per-event bytes retained (see net_dropped_bytes) */
+#define NET_NAME_MAX    64      /* display name bytes retained, attacker-controlled */
+
+#define NET_EV_CONNECT    0
+#define NET_EV_MESSAGE    1
+#define NET_EV_DISCONNECT 2
+#define NET_EV_ERROR      3
+
+typedef struct {
+    int      kind;
+    int      peer_id;
+    uint32_t len;                    /* bytes stored in payload */
+    uint32_t full_len;               /* bytes the host offered, before clamping */
+    uint8_t  payload[NET_PAYLOAD_MAX];
+} net_event_t;
+
+static net_event_t net_ring[NET_EVENTS];
+static uint32_t net_head, net_tail;      /* head == tail => empty */
+static uint32_t net_dropped;             /* events discarded by ring overflow */
+static uint32_t net_truncated;           /* events whose payload was clamped */
+
+static net_event_t *net_push(int kind, int peer_id) {
+    uint32_t next = (net_tail + 1) % NET_EVENTS;
+    if (next == net_head) {
+        /* Full: drop the oldest so the newest state (a disconnect, typically)
+         * still reaches the game. */
+        net_head = (net_head + 1) % NET_EVENTS;
+        net_dropped++;
+    }
+    net_event_t *e = &net_ring[net_tail];
+    net_tail = next;
+    e->kind = kind;
+    e->peer_id = peer_id;
+    e->len = 0;
+    e->full_len = 0;
+    return e;
+}
+
+static void net_store(net_event_t *e, const void *src, unsigned int len) {
+    e->full_len = len;
+    if (len > NET_PAYLOAD_MAX) { len = NET_PAYLOAD_MAX; net_truncated++; }
+    if (len && src) memcpy(e->payload, src, len);
+    e->len = len;
+}
+
+__attribute__((export_name("wc_peer_on_connect"))) void wc_peer_on_connect(int peer_id, const char *name, unsigned int name_len) {
+    net_event_t *e = net_push(NET_EV_CONNECT, peer_id);
+    /* The name is remote text: bound it here so no later stage has to trust
+     * it, and never treat it as NUL-terminated. */
+    if (name_len > NET_NAME_MAX) name_len = NET_NAME_MAX;
+    net_store(e, name, name_len);
+}
+
+__attribute__((export_name("wc_peer_on_message"))) void wc_peer_on_message(int peer_id, const void *data, unsigned int len) {
+    net_store(net_push(NET_EV_MESSAGE, peer_id), data, len);
+}
+
+__attribute__((export_name("wc_peer_on_disconnect"))) void wc_peer_on_disconnect(int peer_id) {
+    net_push(NET_EV_DISCONNECT, peer_id);
+}
+
+__attribute__((export_name("wc_peer_on_error"))) void wc_peer_on_error(int peer_id) {
+    net_push(NET_EV_ERROR, peer_id);
+}
+
+/* Pop one queued event as [kind, peer_id, payload_string, full_len], or nil
+ * when the ring is empty. The payload is built with an explicit length, so a
+ * message full of NUL bytes survives the boundary intact. */
+static mrb_value wy_net_poll(mrb_state *m, mrb_value self) {
+    if (net_head == net_tail) return mrb_nil_value();
+    net_event_t *e = &net_ring[net_head];
+    net_head = (net_head + 1) % NET_EVENTS;
+    mrb_value out = mrb_ary_new_capa(m, 4);
+    mrb_ary_push(m, out, mrb_int_value(m, e->kind));
+    mrb_ary_push(m, out, mrb_int_value(m, e->peer_id));
+    mrb_ary_push(m, out, mrb_str_new(m, (const char *)e->payload, (mrb_int)e->len));
+    mrb_ary_push(m, out, mrb_int_value(m, (mrb_int)e->full_len));
+    return out;
+}
+
+static mrb_value wy_net_open(mrb_state *m, mrb_value self) {
+    const char *addr; mrb_int alen;
+    mrb_get_args(m, "s", &addr, &alen);
+    return mrb_int_value(m, wc_peer_open(addr, (unsigned int)alen));
+}
+
+static mrb_value wy_net_close(mrb_state *m, mrb_value self) {
+    mrb_int peer;
+    mrb_get_args(m, "i", &peer);
+    wc_peer_close((int)peer);
+    return mrb_nil_value();
+}
+
+static mrb_value wy_net_send(mrb_state *m, mrb_value self) {
+    mrb_int peer;
+    const char *data; mrb_int dlen;
+    mrb_get_args(m, "is", &peer, &data, &dlen);
+    return mrb_int_value(m, wc_peer_send((int)peer, data, (unsigned int)dlen));
+}
+
+static mrb_value wy_net_broadcast(mrb_state *m, mrb_value self) {
+    const char *data; mrb_int dlen;
+    mrb_get_args(m, "s", &data, &dlen);
+    return mrb_int_value(m, wc_peer_broadcast(data, (unsigned int)dlen));
+}
+
+static mrb_value wy_net_state(mrb_state *m, mrb_value self) {
+    mrb_int peer;
+    mrb_get_args(m, "i", &peer);
+    return mrb_int_value(m, wc_peer_state((int)peer));
+}
+
+static mrb_value wy_net_count(mrb_state *m, mrb_value self) {
+    return mrb_int_value(m, wc_peer_count());
+}
+
+static mrb_value wy_net_id_at(mrb_state *m, mrb_value self) {
+    mrb_int index;
+    mrb_get_args(m, "i", &index);
+    if (index < 0) return mrb_int_value(m, -1);
+    return mrb_int_value(m, wc_peer_id((unsigned int)index));
+}
+
+static mrb_value wy_net_name(mrb_state *m, mrb_value self) {
+    mrb_int peer;
+    mrb_get_args(m, "i", &peer);
+    char buf[NET_NAME_MAX + 1];
+    int n = wc_peer_name((int)peer, buf, (unsigned int)sizeof buf);
+    if (n <= 0) return mrb_nil_value();
+    /* The host writes bytes-plus-terminator; the string is the bytes before
+     * it. Remote text, so it is handed to Ruby as-is with no UTF-8 claim. */
+    if (n > (int)sizeof buf) n = (int)sizeof buf;
+    return mrb_str_new(m, buf, (mrb_int)(n - 1));
+}
+
+static mrb_value wy_net_transport(mrb_state *m, mrb_value self) {
+    mrb_int peer;
+    mrb_get_args(m, "i", &peer);
+    return mrb_int_value(m, wc_peer_transport((int)peer));
+}
+
+/* [dropped_events, truncated_payloads] since boot. A game that sees these
+ * climb is sending more, or bigger, than a tick can carry. */
+static mrb_value wy_net_overflow(mrb_state *m, mrb_value self) {
+    mrb_value out = mrb_ary_new_capa(m, 2);
+    mrb_ary_push(m, out, mrb_int_value(m, (mrb_int)net_dropped));
+    mrb_ary_push(m, out, mrb_int_value(m, (mrb_int)net_truncated));
+    return out;
+}
+
 /* render target: find-or-create an "@rt:name" sprite entry backed by an RGBA
  * buffer and aim the rasterizer at it (empty name = back to the framebuffer).
  * Cleared to transparent on begin — a target re-renders when shoveled and
@@ -1283,7 +1450,12 @@ static int run_source(const char *name) {
 }
 
 WC_EXPORT wc_info_t *wc_get_info(void) {
-    WC_FILL_INFO(WC_FLAG_DEBUG | WC_FLAG_DETERMINISTIC);
+    /* WC_FLAG_NET_PEER is always set: every wyvern cart shares this one wasm,
+     * so the engine cannot know at build time whether the Ruby on top of it
+     * wants networking. That costs nothing, because the flag alone grants no
+     * reach - a cart only dials out if its manifest also carries a net grant,
+     * and a cart whose Ruby never touches args.net simply never calls. */
+    WC_FILL_INFO(WC_FLAG_DEBUG | WC_FLAG_DETERMINISTIC | WC_FLAG_NET_PEER);
     wc_info.audio_sample_rate = 48000; /* the mixer's fixed output rate */
     wc_info.save_ptr  = (uint32_t)(uintptr_t)wc_save;
     wc_info.save_size = sizeof(wc_save);
@@ -1358,6 +1530,17 @@ WC_EXPORT_INIT void wc_init(void) {
     mrb_define_module_function(mrb, wc, "pad_has_rumble", wy_pad_has_rumble, MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "pad_rumble",     wy_pad_rumble,     MRB_ARGS_REQ(4));
     mrb_define_module_function(mrb, wc, "pad_rumble_stop", wy_pad_rumble_stop, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_open",      wy_net_open,      MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_close",     wy_net_close,     MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_send",      wy_net_send,      MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, wc, "net_broadcast", wy_net_broadcast, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_state",     wy_net_state,     MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_count",     wy_net_count,     MRB_ARGS_REQ(0));
+    mrb_define_module_function(mrb, wc, "net_id_at",     wy_net_id_at,     MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_name",      wy_net_name,      MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_transport", wy_net_transport, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "net_poll",      wy_net_poll,      MRB_ARGS_REQ(0));
+    mrb_define_module_function(mrb, wc, "net_overflow",  wy_net_overflow,  MRB_ARGS_REQ(0));
 
     if (wc_host_info.flags & WC_HOST_FLAG_DETERMINISTIC) {
         mrb_funcall(mrb, mrb_top_self(mrb), "srand", 1, mrb_int_value(mrb, (mrb_int)wc_rng_state));
