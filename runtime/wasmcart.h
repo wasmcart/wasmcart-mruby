@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // ABI version
-#define WC_ABI_VERSION 3
+#define WC_ABI_VERSION 4
 
 // Button bitmask
 #define WC_BTN_A       (1 << 0)
@@ -21,19 +21,71 @@
 #define WC_BTN_RIGHT   (1 << 11)
 #define WC_BTN_L3      (1 << 12)
 #define WC_BTN_R3      (1 << 13)
+// ABI v4 additions, completing parity with SDL2's controller button set (and
+// libretro's, which mirrors it). Bits 0-13 above keep the meanings they have
+// always had. A pad that lacks one of these simply never sets the bit, the
+// same way a desktop never fills the nine touch slots -- so a cart may read
+// them unconditionally.
+#define WC_BTN_GUIDE    (1 << 14)  // the centre/home/logo button
+#define WC_BTN_MISC1    (1 << 15)  // share/capture/microphone, varies by pad
+#define WC_BTN_PADDLE1  (1 << 16)  // upper right paddle (Elite/Pro layouts)
+#define WC_BTN_PADDLE2  (1 << 17)  // upper left paddle
+#define WC_BTN_PADDLE3  (1 << 18)  // lower right paddle
+#define WC_BTN_PADDLE4  (1 << 19)  // lower left paddle
+#define WC_BTN_TOUCHPAD (1 << 20)  // clicking the touchpad itself (DualShock)
+// Bits 21-31 are reserved. The field is u32 so this list can grow without
+// another breaking change; a cart must not assign its own meaning to them.
 
-// Pad struct (16 bytes — must match host PAD_SIZE)
+// Full travel on a trigger, matching SDL2 and libretro.
+#define WC_TRIGGER_MAX      32767
+// Where a runtime presenting triggers as digital buttons should call them
+// pressed. Deliberately low rather than half travel: a pad resting slightly
+// off zero would sit near a halfway line and flicker, and the browser's
+// Gamepad API reports pressed well before half travel too. A cart reading the
+// analog value directly should pick its own threshold.
+#define WC_TRIGGER_PRESSED  3277   /* ~10% of full travel */
+
+// Pad struct (20 bytes — must match host PAD_SIZE)
+//
+// EVERY ANALOG AXIS IS int16, TRIGGERS INCLUDED (ABI v4). Sticks are
+// -32768..32767 and triggers are 0..32767, which is bit-for-bit what SDL2
+// (SDL_GameControllerGetAxis: "ranging from -32768 to 32767. Triggers,
+// however, range from 0 to 32767") and libretro (RETRO_DEVICE_ANALOG:
+// "Analog buttons are reported in the range of [0, 0x7fff]") already report.
+// So a native host assigns the value through with no arithmetic at all.
+//
+// The sticks were always int16 and always matched. Triggers were a uint8 for
+// the first three ABI versions, and that one inconsistency caused three
+// separate host bugs: a trigger scaled like a stick wrapped its byte and
+// reported garbage that moved on its own, another host shifted by 8 instead
+// of 7 so a full press read as half, and a third fed 0..1 into a transform
+// expecting -1..1 so both triggers read as HELD at rest. The byte did not
+// cause those directly; it invited them, because every host had to remember
+// that one axis was a different width from the others, and three in a row
+// did not. Uniform width removes the trap rather than fixing it again.
 typedef struct {
-    uint16_t buttons;
+    uint32_t buttons;        // WC_BTN_* bitmask; bits 21-31 reserved
     int16_t  left_x;
     int16_t  left_y;
     int16_t  right_x;
     int16_t  right_y;
-    uint8_t  left_trigger;
-    uint8_t  right_trigger;
+    int16_t  left_trigger;   // 0..32767, never negative
+    int16_t  right_trigger;  // 0..32767, never negative
     uint8_t  connected;
     uint8_t  _pad[3];
 } wc_pad_t;
+
+// The size is part of the ABI, not a comment: the host writes PAD_SIZE bytes
+// per pad into a flat array, so a struct one byte off here reads pad 1 at the
+// wrong offset and every pad after it is garbage. Several vendored copies of
+// this header carried a comment claiming a size that did not match the struct
+// below it, which is exactly the failure an assertion catches at compile time
+// instead of at runtime as mysteriously-moving input.
+#ifdef __cplusplus
+static_assert(sizeof(wc_pad_t) == 20, "wc_pad_t must be 20 bytes (wasmcart ABI v4)");
+#else
+_Static_assert(sizeof(wc_pad_t) == 20, "wc_pad_t must be 20 bytes (wasmcart ABI v4)");
+#endif
 
 // Time struct (20 bytes, 8-byte aligned)
 //
@@ -69,6 +121,30 @@ typedef struct {
     uint8_t  active;   // 1 if this pointer exists
     uint8_t  _pad[2];
 } wc_pointer_t;
+
+// Scroll wheel (8 bytes — ABI v3.1)
+//
+// SEPARATE FROM THE POINTER ARRAY, because a wheel is not a position: it
+// has no coordinates, no press, and no identity to track across frames.
+// It is a DELTA, and deltas belong beside wc_time.delta_ms rather than in
+// a table of ten things that each have an x and a y.
+//
+// Units are 1/120 of a notch — the WHEEL_DELTA convention. One click of a
+// notched mouse wheel is 120; a trackpad or a free-spin wheel reports
+// whatever fraction it actually moved, so smooth scrolling survives the
+// trip instead of being rounded to a click. Divide by 120.0 to get
+// "notches", which is what LOVE-shaped runtimes hand to wheelmoved().
+//
+// PER-FRAME, HOST-WRITTEN, HOST-CLEARED: the host accumulates every wheel
+// event it receives, writes the total before calling wc_render, and zeroes
+// it afterwards. The cart only ever reads. A cart that never reads it is
+// byte-for-byte unaffected, and a device with no wheel simply leaves zero
+// here forever -- which is the same shape as the nine touch slots a
+// desktop never fills.
+typedef struct {
+    int32_t dx;        // horizontal scroll, 1/120 notch (right positive)
+    int32_t dy;        // vertical scroll, 1/120 notch (UP positive)
+} wc_wheel_t;
 
 // Keyboard keycodes (USB HID scancodes, ABI v3)
 #define WC_KEY_A  0x04
@@ -213,6 +289,7 @@ typedef struct {
     uint32_t pointer_ptr;      // → wc_pointer_t[10], 0 = not used (ABI v3)
     uint32_t keys_ptr;         // → uint8_t[32] key state bitmask, 0 = not used (ABI v3)
     uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU, 3=Vulkan
+    uint32_t wheel_ptr;        // → wc_wheel_t, 0 = not used (ABI v3.1)
 } wc_info_t;
 
 // Optional host import: debug logging
