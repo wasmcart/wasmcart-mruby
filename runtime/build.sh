@@ -100,7 +100,9 @@ emcc runtime.c render2d_gl.c vendor/mruby/build/emscripten/lib/libmruby.a "${ONI
   -o "$OUTPUT"
 echo "built $OUTPUT ($(wc -c < "$OUTPUT") bytes)"
 
-# pack the flagship example as a ready-to-run demo cart
+# pack the flagship example as a ready-to-run demo cart. No --version:
+# wasmcart-pack (0.39.0 or later) takes it from this checkout's git tags (the
+# tag at a clean v* tag, else <last tag>-dev.g<commit>)
 PACK_NAME="flappy-wyvern"
 [ "$TARGET" = "cpu" ] && PACK_NAME="flappy-wyvern-cpu"
 PACK_OUTPUT="../build/${PACK_NAME}.wasc"
