@@ -672,6 +672,17 @@ class Gtk
     WC.debug_set(1, v.to_i)
   end
 
+  # Frame clock from the host. delta_ms is the time since the last frame
+  # (host-clamped); time_ms is time since start. A display faster than 60 Hz
+  # calls tick more often, so step game logic by these rather than by ticks.
+  def delta_ms
+    WC.delta_ms
+  end
+
+  def time_ms
+    WC.time_ms
+  end
+
   # cart SRAM: 64 u32 slots, persisted by the host (save_ptr/save_size)
   def save_u32(slot, v)
     WC.save_u32(slot.to_i, v.to_i)

@@ -1055,6 +1055,18 @@ static mrb_value wy_sound_seek(mrb_state *m, mrb_value self) {
     return mrb_nil_value();
 }
 
+/* frame clock: the host's wc_time, already clamped by the host (see SPEC
+ * "Frame timing and the delta clamp"). Fixed under the deterministic clock. */
+static mrb_value wy_delta_ms(mrb_state *m, mrb_value self) {
+    (void)self;
+    return mrb_float_value(m, wc_time.delta_ms);
+}
+
+static mrb_value wy_time_ms(mrb_state *m, mrb_value self) {
+    (void)self;
+    return mrb_float_value(m, wc_time.time_ms);
+}
+
 static mrb_value wy_sound_playtime(mrb_state *m, mrb_value self) {
     mrb_int ch;
     mrb_get_args(m, "i", &ch);
@@ -1515,6 +1527,8 @@ WC_EXPORT_INIT void wc_init(void) {
     mrb_define_module_function(mrb, wc, "sound_paused", wy_sound_paused, MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, wc, "sound_seek",   wy_sound_seek,   MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, wc, "sound_playtime", wy_sound_playtime, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, wc, "delta_ms",   wy_delta_ms,   MRB_ARGS_NONE());
+    mrb_define_module_function(mrb, wc, "time_ms",    wy_time_ms,    MRB_ARGS_NONE());
     mrb_define_module_function(mrb, wc, "log",        wy_log,        MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "mark",       wy_mark,       MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, wc, "beep",       wy_beep,       MRB_ARGS_REQ(2));

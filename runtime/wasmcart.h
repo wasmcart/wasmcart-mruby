@@ -3,6 +3,62 @@
 
 #include <stdint.h>
 
+/* wc_alloc / wc_free - the allocator a host writes into your cart through.
+ *
+ * Some host calls hand your cart bytes at an address the host has to pick:
+ * glGetString / glGetStringi / glMapBufferRange return pointers, the WebGPU
+ * glue passes adapter info, mapped ranges and error messages, and text and
+ * network payloads arrive as (ptr, len). The host owns none of your memory,
+ * so it asks your cart to allocate, through two optional exports:
+ *
+ *     void *wc_alloc(size_t size, size_t align);   // NULL on failure
+ *     void  wc_free(void *ptr);
+ *
+ * A C/C++ cart that includes wasmcart.h defines and exports both (over aligned_alloc/free), for Emscripten
+ * and wasi-sdk alike. You never call them yourself.
+ *
+ * - They are WEAK: define your own wc_alloc/wc_free (exported under those
+ *   names) and yours win.
+ * - Define WASMCART_NO_ALLOC before including wasmcart.h to leave them out
+ *   (a cart with no libc, or one that exports its own).
+ * - They are only emitted when <stdlib.h> exists, so a -nostdlib cart with no
+ *   sysroot still compiles; such a cart exports its own if it needs them.
+ * - They must be thread-safe in a threaded cart: aligned_alloc is.
+ * - In a WebGPU cart, the cart's own webgpu.cpp releases some of these blocks
+ *   with free(), so wc_alloc must return memory free() accepts. This one does.
+ *
+ * See SPEC.md, "Cart memory the host writes". */
+#if defined(__wasm__) && !defined(WASMCART_NO_ALLOC) && defined(__has_include)
+#if __has_include(<stdlib.h>)
+#include <stdlib.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+__attribute__((weak, used, export_name("wc_alloc")))
+void *wc_alloc(size_t size, size_t align) {
+    if (align < sizeof(void *)) align = sizeof(void *);
+    if (align & (align - 1)) return 0;         /* not a power of two */
+    if (size > (size_t)-1 - align) return 0;   /* rounding up would wrap */
+    /* aligned_alloc wants a size that is a multiple of the alignment */
+    size = size ? (size + align - 1) & ~(align - 1) : align;
+    return aligned_alloc(align, size);
+}
+
+__attribute__((weak, used, export_name("wc_free")))
+void wc_free(void *ptr) {
+    free(ptr);
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __has_include(<stdlib.h>) */
+#endif /* __wasm__ && !WASMCART_NO_ALLOC */
+
+
 // ABI version
 #define WC_ABI_VERSION 4
 
@@ -75,18 +131,6 @@ typedef struct {
     uint8_t  _pad[3];
 } wc_pad_t;
 
-// The size is part of the ABI, not a comment: the host writes PAD_SIZE bytes
-// per pad into a flat array, so a struct one byte off here reads pad 1 at the
-// wrong offset and every pad after it is garbage. Several vendored copies of
-// this header carried a comment claiming a size that did not match the struct
-// below it, which is exactly the failure an assertion catches at compile time
-// instead of at runtime as mysteriously-moving input.
-#ifdef __cplusplus
-static_assert(sizeof(wc_pad_t) == 20, "wc_pad_t must be 20 bytes (wasmcart ABI v4)");
-#else
-_Static_assert(sizeof(wc_pad_t) == 20, "wc_pad_t must be 20 bytes (wasmcart ABI v4)");
-#endif
-
 // Time struct (20 bytes, 8-byte aligned)
 //
 // delta_ms is CLAMPED by the host (250ms in the reference hosts). Any stall
@@ -110,8 +154,19 @@ typedef struct {
     uint32_t preferred_height;  // host's preferred/native height (0 = no preference)
     uint32_t _reserved0;        // (was host_fps — unused, carts use wc_time.delta_ms instead)
     uint32_t audio_sample_rate; // host audio rate (e.g. 48000)
-    uint32_t flags;             // reserved for future use
+    uint32_t flags;             // WC_HOST_FLAG_* (wc_cart.h has DETERMINISTIC); read once at wc_init
+    // Offset 20, written only when the cart sets WC_FLAG_HOST_THREADS (a cart
+    // built before it has a 20-byte struct, and the host must not write past it).
+    uint32_t hardware_threads;  // the host machine's hardware threads (logical CPUs
+                                // this process may use); 0 = unknown. Read once at wc_init
 } wc_host_info_t;
+
+// Host-info flag: the host selected WebGPU for a cart that imports BOTH the
+// `gl` module and WebGPU functions (SPEC.md, "WebGPU"). 0 means GL. A cart
+// importing only one API never needs to read it.
+#ifndef WC_HOST_FLAG_GPU_WGPU
+#define WC_HOST_FLAG_GPU_WGPU (1u << 1)
+#endif
 
 // Pointer struct (8 bytes — unified mouse/touch, ABI v3)
 typedef struct {
@@ -269,6 +324,9 @@ typedef struct {
 // byte-for-byte identical to one built before they existed - see SPEC.md.
 #define WC_FLAG_DEBUG      (1 << 5)  // cart exports wc_debug_state() (see wc_cart.h)
 #define WC_FLAG_DETERMINISTIC (1 << 6) // cart honors host deterministic mode
+// The cart's wc_host_info_t has hardware_threads (24 bytes): the host writes it.
+// wc_cart.h's WC_FILL_INFO sets it (its wc_host_info_t is this header's).
+#define WC_FLAG_HOST_THREADS (1 << 7)
 
 // Info struct (returned by wc_get_info)
 typedef struct {
@@ -288,7 +346,8 @@ typedef struct {
     uint32_t audio_sample_rate; // ring buffer sample rate (0 = host decides, typically 48000)
     uint32_t pointer_ptr;      // → wc_pointer_t[10], 0 = not used (ABI v3)
     uint32_t keys_ptr;         // → uint8_t[32] key state bitmask, 0 = not used (ABI v3)
-    uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU, 3=Vulkan
+    uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU (SPEC.md);
+                               // anything else is refused at load
     uint32_t wheel_ptr;        // → wc_wheel_t, 0 = not used (ABI v3.1)
 } wc_info_t;
 
@@ -474,6 +533,154 @@ static inline void wc_pad_rumble(unsigned int pad_id, float low, float high,
 static inline void wc_pad_rumble_stop(unsigned int pad_id) { (void)pad_id; }
 #endif
 
+// --- Runtime code generation (SPEC.md, "Runtime code generation") ---
+// Hand the host a wasm module generated at runtime; its exported functions land
+// in consecutive slots of the cart's __indirect_function_table. The module may
+// import only from namespace "cart" (the cart's own exports). Returns the first
+// slot, or WC_JIT_REFUSED / WC_JIT_PENDING (poll *result) / WC_JIT_BUSY.
+#define WC_JIT_REFUSED  (-1)
+#define WC_JIT_PENDING  (-2)
+#define WC_JIT_BUSY     (-3)
+// wc_jit_config keys (-1 = no opinion)
+#define WC_JIT_CFG_THRESHOLD      0
+#define WC_JIT_CFG_OFF            1
+#define WC_JIT_CFG_TIERUP         2
+#define WC_JIT_CFG_MAX_MODULE     3
+#define WC_JIT_CFG_MAX_TOTAL      4
+#define WC_JIT_CFG_MAX_FUNCTIONS  5
+#define WC_JIT_CFG_MAX_IN_FLIGHT  6
+// Restore generation: changes every time the host restores a save state or
+// rewinds. Read it at frame (or dispatch) entry; when it differs from the value
+// you stored, forget every slot and pending *result cell and re-link lazily.
+#define WC_JIT_CFG_RESTORE_GEN    7
+
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_jit_link")))
+extern int wc_jit_link(const unsigned char *bytes, unsigned int len, int *result);
+
+__attribute__((import_module("env"), import_name("wc_jit_unlink")))
+extern void wc_jit_unlink(int first_slot);
+
+__attribute__((import_module("env"), import_name("wc_jit_config")))
+extern int wc_jit_config(int key);
+#else
+static inline int wc_jit_link(const unsigned char *bytes, unsigned int len, int *result) {
+    (void)bytes; (void)len; if (result) *result = -1; return -1;
+}
+static inline void wc_jit_unlink(int first_slot) { (void)first_slot; }
+static inline int wc_jit_config(int key) { (void)key; return -1; }
+#endif
+
+// --- Input actions (SPEC.md, "Input actions") ---
+// Steam Input style: declare named actions in action sets, each with a DEFAULT
+// binding to a logical pad input; the host owns the binding (remaps, devices)
+// and says what each action is on, so prompts read "Press [Cross] to Jump".
+// Optional: a cart that never calls these keeps reading wc_pad_t as before.
+#define WC_ACTION_DIGITAL 0
+#define WC_ACTION_ANALOG  1
+// Logical inputs: 0-20 are WC_BTN_* bit indexes, then the analog ones.
+#define WC_IN_NONE     (-1)
+#define WC_IN_A        0
+#define WC_IN_B        1
+#define WC_IN_X        2
+#define WC_IN_Y        3
+#define WC_IN_L        4
+#define WC_IN_R        5
+#define WC_IN_START    6
+#define WC_IN_SELECT   7
+#define WC_IN_UP       8
+#define WC_IN_DOWN     9
+#define WC_IN_LEFT     10
+#define WC_IN_RIGHT    11
+#define WC_IN_L3       12
+#define WC_IN_R3       13
+#define WC_IN_LSTICK   32
+#define WC_IN_RSTICK   33
+#define WC_IN_LTRIGGER 34
+#define WC_IN_RTRIGGER 35
+#define WC_IN_DPAD     36
+// wc_input_device
+#define WC_DEVICE_UNKNOWN        0
+#define WC_DEVICE_KEYBOARD_MOUSE 1
+#define WC_DEVICE_GAMEPAD        2
+#define WC_DEVICE_TOUCH          3
+#define WC_DEVICE_REMOTE         4
+// wc_action_glyph: (family << 8) | element; 0 = none (draw the label).
+// Pad families: element = WC_IN_* position. KEY: HID scancode. MOUSE: 0 left
+// 1 right 2 middle 3 wheel 4 motion. TOUCH: 0 tap 1 drag 2 on-screen button.
+#define WC_GLYPH_XBOX        1
+#define WC_GLYPH_PLAYSTATION 2
+#define WC_GLYPH_NINTENDO    3
+#define WC_GLYPH_GAMEPAD     4
+#define WC_GLYPH_KEY         5
+#define WC_GLYPH_MOUSE       6
+#define WC_GLYPH_TOUCH       7
+#define WC_GLYPH_FAMILY(g)   (((g) >> 8) & 0xff)
+#define WC_GLYPH_ELEMENT(g)  ((g) & 0xff)
+
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_action_set_add")))
+extern int wc_action_set_add(const char *name, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_action_add")))
+extern int wc_action_add(int set, int kind, int default_input, const char *name, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_action_set_activate")))
+extern void wc_action_set_activate(int player, int set);
+__attribute__((import_module("env"), import_name("wc_action_digital")))
+extern int wc_action_digital(int player, int action);
+__attribute__((import_module("env"), import_name("wc_action_analog")))
+extern int wc_action_analog(int player, int action, float *xy);
+__attribute__((import_module("env"), import_name("wc_action_origin")))
+extern int wc_action_origin(int player, int action, char *buf, unsigned int cap);
+__attribute__((import_module("env"), import_name("wc_action_glyph")))
+extern int wc_action_glyph(int player, int action);
+__attribute__((import_module("env"), import_name("wc_input_device")))
+extern int wc_input_device(int player);
+__attribute__((import_module("env"), import_name("wc_input_revision")))
+extern unsigned int wc_input_revision(void);
+#else
+static inline int wc_action_set_add(const char *n, unsigned int l) { (void)n; (void)l; return 0; }
+static inline int wc_action_add(int s, int k, int i, const char *n, unsigned int l) {
+    (void)s; (void)k; (void)i; (void)n; (void)l; return -1;
+}
+static inline void wc_action_set_activate(int p, int s) { (void)p; (void)s; }
+static inline int wc_action_digital(int p, int a) { (void)p; (void)a; return 0; }
+static inline int wc_action_analog(int p, int a, float *xy) { (void)p; (void)a; xy[0] = xy[1] = 0; return 0; }
+static inline int wc_action_origin(int p, int a, char *b, unsigned int c) { (void)p; (void)a; (void)b; (void)c; return -1; }
+static inline int wc_action_glyph(int p, int a) { (void)p; (void)a; return 0; }
+static inline int wc_input_device(int p) { (void)p; return 0; }
+static inline unsigned int wc_input_revision(void) { return 1; }
+#endif
+
+// One-call helpers. wc_action_new(set, kind, default_input, "Jump") declares
+// an action; wc_action_set_new("menu") a set. wc_action_label(player, action)
+// returns a printable label: the host's answer, or the logical input's name
+// when the host does not know, or "" when the action is unbound on the
+// player's device (hide that prompt). The string lives in one of 4 rotating
+// static buffers, so up to 4 labels can be used in one printf. Re-read labels
+// when wc_input_revision() changes, not every frame.
+static inline unsigned int wc__strlen(const char *s) { unsigned int n = 0; while (s[n]) n++; return n; }
+static inline int wc_action_set_new(const char *name) { return wc_action_set_add(name, wc__strlen(name)); }
+static inline int wc_action_new(int set, int kind, int default_input, const char *name) {
+    return wc_action_add(set, kind, default_input, name, wc__strlen(name));
+}
+static inline const char *wc_input_name(int input) {
+    static const char *const btn[] = { "A", "B", "X", "Y", "L", "R", "Start", "Select", "Up", "Down",
+        "Left", "Right", "L3", "R3", "Guide", "Misc", "P1", "P2", "P3", "P4", "Touchpad" };
+    static const char *const axis[] = { "Left Stick", "Right Stick", "LT", "RT", "D-pad" };
+    if (input >= 0 && input <= 20) return btn[input];
+    if (input >= 32 && input <= 36) return axis[input - 32];
+    return "";
+}
+static inline const char *wc_action_label(int player, int action, int default_input) {
+    static char bufs[4][32];
+    static unsigned int next = 0;
+    char *b = bufs[next++ & 3];
+    int n = wc_action_origin(player, action, b, sizeof bufs[0]);
+    if (n > 0) return b;
+    if (n == 0) return "";
+    return wc_input_name(default_input);
+}
+
 // --- Asset API (ABI v2) ---
 // For .wasc carts: load assets from the archive at runtime instead of embedding.
 // For bare .wasm carts these are not available (don't import them unless you need them).
@@ -500,6 +707,41 @@ static inline int wc_load_asset(const char* path, unsigned int path_len,
 // Helper: load asset by string literal
 #define WC_ASSET_SIZE(s) wc_asset_size(s, sizeof(s) - 1)
 #define WC_LOAD_ASSET(s, dest, max) wc_load_asset(s, sizeof(s) - 1, dest, max)
+
+// Asset prefetch (additive to v4). Main-thread only. See SPEC "Asset prefetch".
+// Read WC_HOST_FLAG_ASSET_PREFETCH from wc_host_info_t.flags once in wc_init
+// and call these only when it is set: an older host stubs the imports, and the
+// stubs' return values disagree between hosts.
+#ifndef WC_HOST_FLAG_ASSET_PREFETCH
+#define WC_HOST_FLAG_ASSET_PREFETCH 0x04  // wc_host_info_t.flags: the host implements these
+#endif
+
+#define WC_PREFETCH_PENDING   0   // the host is fetching
+#define WC_PREFETCH_READY     1   // the bytes are in host memory: wc_load_asset is a copy
+#define WC_PREFETCH_MISSING  -1   // no such asset, or an invalid path (as wc_asset_size)
+#define WC_PREFETCH_FAILED   -2   // the fetch failed, or the host could not hold the bytes
+#define WC_PREFETCH_REFUSED  -3   // nothing started: too many pending, cache full, or a cart thread
+
+#ifdef __wasm__
+// Start fetching the whole asset into host memory (or poll it: a repeat call
+// with the same path starts nothing). Returns a WC_PREFETCH_* state.
+__attribute__((import_module("env"), import_name("wc_asset_prefetch")))
+extern int wc_asset_prefetch(const char* path, unsigned int path_len, int priority);
+
+// Drop a prefetch: abort or discard an in-flight one, free a READY one.
+__attribute__((import_module("env"), import_name("wc_asset_prefetch_cancel")))
+extern void wc_asset_prefetch_cancel(const char* path, unsigned int path_len);
+#else
+static inline int wc_asset_prefetch(const char* path, unsigned int path_len, int priority) {
+    (void)path; (void)path_len; (void)priority; return WC_PREFETCH_READY;
+}
+static inline void wc_asset_prefetch_cancel(const char* path, unsigned int path_len) {
+    (void)path; (void)path_len;
+}
+#endif
+
+#define WC_ASSET_PREFETCH(s, prio) wc_asset_prefetch(s, sizeof(s) - 1, prio)
+#define WC_ASSET_PREFETCH_CANCEL(s) wc_asset_prefetch_cancel(s, sizeof(s) - 1)
 
 // --- Networking API (ABI v3, optional) ---
 // One family: peer connections. A connection may be a WebSocket to a server, a
@@ -708,6 +950,15 @@ typedef signed long int GLintptr;
 // Texture targets
 #define GL_TEXTURE_2D                     0x0DE1
 #define GL_TEXTURE_CUBE_MAP               0x8513
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_X    0x8515
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X    0x8516
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y    0x8517
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y    0x8518
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z    0x8519
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z    0x851A
+#define GL_TEXTURE_3D                     0x806F
+#define GL_TEXTURE_2D_ARRAY               0x8C1A
+#define GL_TEXTURE_WRAP_R                 0x8072
 
 // Texture params
 #define GL_TEXTURE_MIN_FILTER             0x2801
@@ -740,6 +991,21 @@ typedef signed long int GLintptr;
 #define GL_RGB8                           0x8051
 #define GL_RGBA8                          0x8058
 
+// Sized float formats (GLES 3.0 core; on WebGL2 these are renderable only
+// with EXT_color_buffer_float, which the reference hosts request at context
+// creation. Sampling them with a LINEAR filter additionally wants
+// OES_texture_float_linear. Check, don't assume: a format that is legal to
+// allocate is not necessarily renderable or filterable on every driver.)
+#define GL_R16F                           0x822D
+#define GL_RG16F                          0x822F
+#define GL_RGBA16F                        0x881A
+#define GL_R32F                           0x822E
+#define GL_RG32F                          0x8230
+#define GL_RGBA32F                        0x8814
+#define GL_R11F_G11F_B10F                 0x8C3A
+// (GL_HALF_FLOAT / GL_FLOAT, the matching pixel TYPEs, are declared with the
+// other data types above.)
+
 // Shader types
 #define GL_VERTEX_SHADER                  0x8B31
 #define GL_FRAGMENT_SHADER                0x8B30
@@ -756,15 +1022,41 @@ typedef signed long int GLintptr;
 #define GL_DRAW_FRAMEBUFFER               0x8CA9
 #define GL_RENDERBUFFER                   0x8D41
 #define GL_COLOR_ATTACHMENT0              0x8CE0
+// Multiple render targets. GLES 3.0 guarantees at least 4 colour
+// attachments; query GL_MAX_COLOR_ATTACHMENTS for the real number rather
+// than assuming, since a deferred renderer sized to 8 will fail to complete
+// its framebuffer on a driver that offers 4.
+#define GL_COLOR_ATTACHMENT1              0x8CE1
+#define GL_COLOR_ATTACHMENT2              0x8CE2
+#define GL_COLOR_ATTACHMENT3              0x8CE3
+#define GL_COLOR_ATTACHMENT4              0x8CE4
+#define GL_COLOR_ATTACHMENT5              0x8CE5
+#define GL_COLOR_ATTACHMENT6              0x8CE6
+#define GL_COLOR_ATTACHMENT7              0x8CE7
 #define GL_DEPTH_ATTACHMENT               0x8D00
 #define GL_STENCIL_ATTACHMENT             0x8D20
 #define GL_DEPTH_STENCIL_ATTACHMENT       0x821A
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 
-// Renderbuffer formats
+// Renderbuffer / depth-texture formats
 #define GL_DEPTH_COMPONENT16              0x81A5
 #define GL_DEPTH_COMPONENT24              0x81A6
+#define GL_DEPTH_COMPONENT32F             0x8CAC
+#define GL_DEPTH_COMPONENT                0x1902
+#define GL_DEPTH_STENCIL                  0x84F9
 #define GL_DEPTH24_STENCIL8               0x88F0
+#define GL_DEPTH32F_STENCIL8              0x8CAD
+#define GL_UNSIGNED_INT_24_8              0x84FA
+
+// Limits, for glGetIntegerv
+#define GL_MAX_COLOR_ATTACHMENTS          0x8CDF
+#define GL_MAX_DRAW_BUFFERS               0x8824
+#define GL_MAX_TEXTURE_SIZE               0x0D33
+#define GL_MAX_CUBE_MAP_TEXTURE_SIZE      0x851C
+#define GL_MAX_3D_TEXTURE_SIZE            0x8073
+#define GL_MAX_ARRAY_TEXTURE_LAYERS       0x88FF
+#define GL_MAX_TEXTURE_IMAGE_UNITS        0x8872
+#define GL_MAX_SAMPLES                    0x8D57
 
 // GetString
 #define GL_VENDOR                         0x1F00
@@ -845,6 +1137,14 @@ _GL_IMPORT(glTexParameterf)  extern void glTexParameterf(GLenum target, GLenum p
 _GL_IMPORT(glGenerateMipmap) extern void glGenerateMipmap(GLenum target);
 _GL_IMPORT(glCompressedTexImage2D) extern void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void* data);
 
+// 3D / array textures (GLES 3.0). GL_TEXTURE_3D holds a volume, and
+// GL_TEXTURE_2D_ARRAY holds independent layers that do NOT filter into each
+// other -- the distinction matters: a texture atlas as an array avoids the
+// bleed a 3D texture would introduce between slices.
+_GL_IMPORT(glTexImage3D)     extern void glTexImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels);
+_GL_IMPORT(glTexSubImage3D)  extern void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels);
+_GL_IMPORT(glTexStorage3D)   extern void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
+
 // Shaders
 _GL_IMPORT(glCreateShader)      extern GLuint glCreateShader(GLenum type);
 _GL_IMPORT(glDeleteShader)      extern void glDeleteShader(GLuint shader);
@@ -905,6 +1205,10 @@ _GL_IMPORT(glDeleteFramebuffers)     extern void glDeleteFramebuffers(GLsizei n,
 _GL_IMPORT(glBindFramebuffer)        extern void glBindFramebuffer(GLenum target, GLuint framebuffer);
 _GL_IMPORT(glCheckFramebufferStatus) extern GLenum glCheckFramebufferStatus(GLenum target);
 _GL_IMPORT(glFramebufferTexture2D)   extern void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+// Attach ONE layer of an array/3D texture, which is how a renderer draws into
+// a single cubemap face or array slice.
+_GL_IMPORT(glFramebufferTextureLayer) extern void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer);
+_GL_IMPORT(glBlitFramebuffer)        extern void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
 _GL_IMPORT(glFramebufferRenderbuffer) extern void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
 
 // RBOs

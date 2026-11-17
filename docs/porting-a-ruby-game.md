@@ -25,7 +25,10 @@ excludes.
 
 **Ports directly (✓):**
 
-- the `tick args` loop, 60fps, bottom-left 1280x720
+- the `tick args` loop, bottom-left 1280x720. It runs once per host frame:
+  60fps on a 60 Hz display, faster on a faster one. Code that counts ticks as
+  time (DragonRuby's fixed 60) should step by `args.gtk.delta_ms` instead;
+  `args.gtk.time_ms` is time since start. Both are fixed-step under seeded replay
 - `args.outputs.solids / sprites / borders / lines / labels / primitives /
   debug / static_* / background_color` and **render targets**
   (`args.outputs[:name]`, drawn via `path: :name`)
@@ -92,13 +95,13 @@ makes it safe and portable.
 
 | In your game | Here |
 |---|---|
-| `require 'app/foo.rb'` | Works - files load from cart assets (no Regexp class in the build, plain paths only) |
-| TTF fonts, `size_enum` | Built-in 5x7 bitfont; use `size_px` (pixel scale) and `alignment_enum` 0/1/2 |
+| `require 'app/foo.rb'` | Works - files load from cart assets |
+| Movement per tick (DragonRuby is a fixed 60 ticks a second) | Scale by `args.gtk.delta_ms / 16.667`, or use `args.gtk.time_ms`, so the game runs at the same speed on a 120 or 144 Hz display |
+| `size_enum` | Use `size_px` (pixel scale) and `alignment_enum` 0/1/2; TTF fonts work via `font:` |
 | Mouse / full keyboard | Gamepad only - see above |
 | `args.audio[:music] = {...}` | Works: gain, looping, pitch, paused, playtime seek, delete-to-stop; WAV + OGG |
 | `$gtk.write_file` / reading files | Cart SRAM: `args.gtk.save_u32 slot, v` / `load_u32 slot` (64 slots, persisted by hosts as `<cart>.sav`, savestate-safe in RetroArch) |
-| Render targets, easing, `args.outputs.static_*` | Not implemented - restructure or draw per tick |
-| `Regexp`, `File`, `Dir`, threads | Not in the sandbox - carts are pure compute over the ABI |
+| `File`, `Dir`, threads | Not in the sandbox - carts are pure compute over the ABI |
 
 Ruby dialect: this is mruby 3.4 - modern Ruby, but skip endless method
 definitions (`def x = y`) and bare `module_function`; use classic `def` and

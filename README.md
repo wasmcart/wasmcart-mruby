@@ -62,8 +62,11 @@ npx wasmcart pack --wasm cart.wasm --assets app --name my-game \
 > and doesn't claim compatibility; it exists because Ruby-games-as-open-
 > cartridges is a fun idea. Both are built on [mruby](https://mruby.org/).
 
-Everything happens in `tick args`, 60 times a second, on a 1280x720
-bottom-left-origin canvas.
+Everything happens in `tick args`, once per host frame, on a 1280x720
+bottom-left-origin canvas. That is 60 times a second on a 60 Hz display but
+more often on a faster one, so game logic that has to run at a fixed speed
+should step by `args.gtk.delta_ms` (see State and helpers) rather than by
+ticks.
 
 **Outputs** (shovel, redrawn every tick):
 
@@ -103,6 +106,13 @@ the primary input):
 - `args.easing.ease start, now, duration, :quad, :flip, ...` for animation
 - `Numeric#to_radians` / `to_degrees` / `sign`
 - `args.tick_count` (also `Kernel#tick_count` and `args.state.tick_count`), `args.grid`
+- `args.gtk.delta_ms` / `args.gtk.time_ms` - the **host frame clock**, Floats in
+  milliseconds: time since the last frame and time since start. `delta_ms` is
+  already clamped by the host (250 ms in the reference hosts), so a stall never
+  hands you a huge step. Under the deterministic clock (`--seed`) it is a
+  constant 16.667 and `time_ms` advances by exactly that per tick, so replays
+  stay bit-identical. `x += speed * args.gtk.delta_ms / 1000.0` moves at the
+  same speed at 60, 120 or 144 Hz
 - `puts` - captured by the host's debug event trace
 - `args.gtk.save_u32 slot, v` / `load_u32 slot` - **cart SRAM** (64 slots,
   persisted as `<cart>.sav` by the player; how the flappy example keeps its
@@ -248,6 +258,8 @@ The repo's own end-to-end checks drive the engine through wasmcart's public
 `CartHost` API, no host code modified:
 
 ```sh
+node bench/verify-all.mjs        # every check below plus the header drift check
+node bench/verify-clock.mjs      # frame clock: fixed step under --seed, real gaps otherwise
 node bench/verify-rumble.mjs     # gamepad rumble, with a no-rumble control pass
 node bench/verify-net.mjs        # peer networking against a live WebSocket server
 ```
