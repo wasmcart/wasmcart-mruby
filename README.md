@@ -39,17 +39,18 @@ To write your own:
 ```bash
 git clone https://github.com/wasmcart/wasmcart-mruby
 cp -r wasmcart-mruby/template my-game
+cp wasmcart-mruby/build/main.wasm my-game/
 cd my-game && ./run.sh          # opens a window; edit app/main.rb, rerun
 ```
 
-That's the whole loop: edit Ruby, run. No compiler, no toolchain - `run.sh`
-copies the prebuilt engine (`build/main.wasm`) next to your `manifest.json`
-and plays the directory as a dev-mode cart via
+That's the whole loop: edit Ruby, run. No compiler, no toolchain - the
+prebuilt engine (`main.wasm`) sits next to your `manifest.json`, and `run.sh`
+plays the directory as a dev-mode cart via
 [`npx wasmcart`](https://www.npmjs.com/package/wasmcart). When you want
 a shippable single file:
 
 ```bash
-npx wasmcart pack --wasm cart.wasm --assets app --name my-game \
+npx wasmcart pack --wasm main.wasm --assets app --name my-game \
   --width 1280 --height 720 -o my-game.wasc
 ```
 
