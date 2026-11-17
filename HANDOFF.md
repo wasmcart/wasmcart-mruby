@@ -75,6 +75,7 @@ cd <your>/wasmcart-mruby
 #   export WASMCART_REPO=/path/to/wasmcart
 ./runtime/build.sh          # default = gl2d → build/main.wasm + flappy-wyvern.wasc
 ./runtime/build.sh cpu      # benchmark comparator → build/main-cpu.wasm
+node bench/verify-all.mjs   # release gate: header drift + clock/rumble on both engines + net
 
 # pack a cart
 node $WASMCART_REPO/bin/wasmcart-pack.js --wasm build/main.wasm \

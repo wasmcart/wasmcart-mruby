@@ -281,8 +281,11 @@ WASMCART_REPO=/path/to/wasmcart runtime/build.sh
 ```
 
 Needs [emcc](https://emscripten.org), host ruby+rake (mruby cross-build, cached
-after the first run), and a [wasmcart](https://github.com/wasmcart/wasmcart)
-checkout for the SDK headers ([`include/`](https://github.com/wasmcart/wasmcart/tree/main/include)). Notable: `-sSUPPORT_LONGJMP=wasm`
+after the first run), node (the header drift check and the packer), python3
+(embeds the prelude), and a [wasmcart](https://github.com/wasmcart/wasmcart)
+checkout for the SDK headers ([`include/`](https://github.com/wasmcart/wasmcart/tree/main/include)).
+`runtime/build.sh cpu` builds the software-rasterizer engine, and
+`node bench/verify-all.mjs` then checks both engines before you ship. Notable: `-sSUPPORT_LONGJMP=wasm`
 is mandatory - mruby's exception handling breaks bizarrely without it.
 
 ## The wasmcart org
